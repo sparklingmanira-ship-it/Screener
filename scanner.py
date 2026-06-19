@@ -4,6 +4,7 @@ import pandas as pd
 from tvDatafeed import TvDatafeed, Interval
 import concurrent.futures
 import os
+import math
 
 # --- INITIALIZATION ---
 @st.cache_resource
@@ -49,7 +50,8 @@ selected_strategy = st.sidebar.selectbox(
         "Hidden Swing Strategy", 
         "Institutional EMA Pullback v3",
         "SMA 14/28 Crossover",
-        "NN50 EMA + Volume Scanner"
+        "NN50 EMA + Volume Scanner",
+        "Macro Darvas Box Breakout"
     ]
 )
 
@@ -74,6 +76,9 @@ elif selected_strategy == "NN50 EMA + Volume Scanner":
     params['vol_mult'] = st.sidebar.number_input("Volume > Avg Multiplier", value=1.3, step=0.1)
     params['prox_20'] = st.sidebar.number_input("20 EMA Proximity %", value=1.5, step=0.1)
     params['prox_50'] = st.sidebar.number_input("50 EMA Proximity %", value=2.0, step=0.1)
+
+elif selected_strategy == "Macro Darvas Box Breakout":
+    params['max_box_height'] = st.sidebar.number_input("Max Box Height/Depth (%)", value=60.0, step=5.0) / 100
 
 st.sidebar.markdown("---")
 st.sidebar.header("3. Watchlist Management")
@@ -180,6 +185,7 @@ def calc_inst_ema_pullback_v3(ticker, df, params):
     # R:R Multiplier Logic
     entry_price = curr['Close']
     risk_points = entry_price - sl
+    if risk_points <= 0: return None
     risk_pct = (risk_points / entry_price) * 100
     acceptable_risk = risk_pct <= 7.0
 
@@ -251,12 +257,61 @@ def calc_nn50_ema(ticker, df, params):
     
     return None
 
+def calc_macro_box_breakout(ticker, df, params):
+    # Require enough data for a macro multi-year view
+    if len(df) < 260:
+        return None
+        
+    # Calculate 52-Week (250 Days) High and Low (The "Blue Lines")
+    df['macro_high'] = df['High'].rolling(window=250).max()
+    df['macro_low'] = df['Low'].rolling(window=250).min()
+    
+    # 20-day swing low for the Stop Loss
+    df['swing_low_20'] = df['Low'].rolling(window=20).min()
+    
+    curr_close = df['Close'].iloc[-1]
+    prev_high = df['macro_high'].iloc[-2] # The resistance line right before today
+    macro_low = df['macro_low'].iloc[-1]
+    
+    # Condition 1: Breakout! Current close is pushing above or within 1% of the 52-week box high
+    is_breakout = curr_close >= (prev_high * 0.99)
+    
+    # Condition 2: Ensure it's breaking out of a tight consolidation box, not just a straight vertical line
+    box_height = (prev_high - macro_low) / macro_low
+    valid_box = box_height <= params.get('max_box_height', 0.60) # Box shouldn't be wider than X% top to bottom
+    
+    if is_breakout and valid_box:
+        sl = df['swing_low_20'].iloc[-1]
+        
+        # R:R Multiplier Logic
+        risk_points = curr_close - sl
+        if risk_points <= 0: return None
+        
+        risk_pct = (risk_points / curr_close) * 100
+        
+        # Aggressive Macro Targets (1.5x, 2.5x, 4x)
+        t1 = curr_close + (risk_points * 1.5) 
+        t2 = curr_close + (risk_points * 2.5) 
+        t3 = curr_close + (risk_points * 4.0) 
+        
+        return {
+            "Ticker": ticker, 
+            "Entry": round(curr_close, 2), 
+            "Stop Loss": round(sl, 2), 
+            "T1": round(t1, 2),
+            "T2": round(t2, 2),
+            "T3": round(t3, 2),
+            "Risk %": f"{round(risk_pct, 2)}%", 
+            "Signal": "🚀 MACRO BOX BREAKOUT"
+        }
+    return None
+
 # --- CORE SCANNING ENGINE ---
 def scan_stock(ticker, strategy_name, strategy_params):
     try:
         clean_ticker = str(ticker).strip().replace('.NS', '')
-        # Pulled 250 bars to assure enough history for the EMA 200 requirement
-        df = tv.get_hist(symbol=clean_ticker, exchange='NSE', interval=Interval.in_daily, n_bars=250)
+        # Pulled 750 bars to assure enough history for the Macro Box Breakout strategy
+        df = tv.get_hist(symbol=clean_ticker, exchange='NSE', interval=Interval.in_daily, n_bars=750)
         
         if df is None or df.empty or len(df) < 200:
             return None 
@@ -272,6 +327,8 @@ def scan_stock(ticker, strategy_name, strategy_params):
             return calc_sma_crossover(clean_ticker, df, strategy_params)
         elif strategy_name == "NN50 EMA + Volume Scanner":
             return calc_nn50_ema(clean_ticker, df, strategy_params)
+        elif strategy_name == "Macro Darvas Box Breakout": 
+            return calc_macro_box_breakout(clean_ticker, df, strategy_params)
             
     except Exception:
         return None
