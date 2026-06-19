@@ -138,6 +138,9 @@ def calc_inst_ema_pullback_v3(ticker, df, params):
     df['vol_sma10'] = ta.sma(df['Volume'], 10)
     df['atr_sma20'] = ta.sma(df['atr14'], 20)
     df['swing_low_5'] = df['Low'].rolling(window=5).min()
+    
+    # Calculate Swing High for Fibonacci Target (10 period high)
+    df['swing_high_10'] = df['High'].rolling(window=10).max()
 
     # ADX Calculation
     adx_df = ta.adx(df['High'], df['Low'], df['Close'], 14)
@@ -180,17 +183,25 @@ def calc_inst_ema_pullback_v3(ticker, df, params):
     risk_pct = ((curr['Close'] - sl) / curr['Close']) * 100
     acceptable_risk = risk_pct <= 7.0
 
+    # 7. Fibonacci 1.618 Extension Target Calculation
+    swing_high = curr['swing_high_10']
+    swing_low = curr['swing_low_5']
+    fib_range = swing_high - swing_low
+    # Standard 1.618 extension measured from the recent pullback low
+    fib_target = swing_low + (fib_range * 1.618)
+
     # Execute full setup match
     if (in_uptrend and pulled_back and bullish_recovery and low_vol_pullback and 
         good_recovery_vol and rsi_ok and trend_strong and not_consolidating and acceptable_risk):
         
         return {
             "Ticker": ticker, 
-            "Close": round(curr['Close'], 2), 
-            "Risk %": f"{round(risk_pct, 2)}%", 
+            "Entry Price": round(curr['Close'], 2), 
             "Stop Loss": round(sl, 2), 
+            "Fib Target (1.618)": round(fib_target, 2),
+            "Risk %": f"{round(risk_pct, 2)}%", 
             "RSI / ADX": f"{round(curr['rsi14'], 1)} / {round(curr['adx'], 1)}",
-            "Signal": "🟢 Setup V3 BUY"
+            "Signal": "🟢 V3 SETUP BUY"
         }
     return None
 
