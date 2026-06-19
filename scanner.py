@@ -4,7 +4,6 @@ import pandas as pd
 from tvDatafeed import TvDatafeed, Interval
 import concurrent.futures
 import os
-import math
 
 # --- INITIALIZATION ---
 @st.cache_resource
@@ -138,9 +137,6 @@ def calc_inst_ema_pullback_v3(ticker, df, params):
     df['vol_sma10'] = ta.sma(df['Volume'], 10)
     df['atr_sma20'] = ta.sma(df['atr14'], 20)
     df['swing_low_5'] = df['Low'].rolling(window=5).min()
-    
-    # Calculate Swing High for Fibonacci Target (10 period high)
-    df['swing_high_10'] = df['High'].rolling(window=10).max()
 
     # ADX Calculation
     adx_df = ta.adx(df['High'], df['Low'], df['Close'], 14)
@@ -180,15 +176,17 @@ def calc_inst_ema_pullback_v3(ticker, df, params):
     atr_sl = curr['swing_low_5'] - (curr['atr14'] * params['atr_mult'])
     floor_sl = curr['Close'] * 0.94
     sl = max(atr_sl, floor_sl)
-    risk_pct = ((curr['Close'] - sl) / curr['Close']) * 100
+    
+    # R:R Multiplier Logic
+    entry_price = curr['Close']
+    risk_points = entry_price - sl
+    risk_pct = (risk_points / entry_price) * 100
     acceptable_risk = risk_pct <= 7.0
 
-    # 7. Fibonacci 1.618 Extension Target Calculation
-    swing_high = curr['swing_high_10']
-    swing_low = curr['swing_low_5']
-    fib_range = swing_high - swing_low
-    # Standard 1.618 extension measured from the recent pullback low
-    fib_target = swing_low + (fib_range * 1.618)
+    # 7. Risk/Reward Anchored Targets
+    t1 = entry_price + (risk_points * 1.0) # 1:1 Risk/Reward
+    t2 = entry_price + (risk_points * 2.0) # 1:2 Risk/Reward
+    t3 = entry_price + (risk_points * 3.0) # 1:3 Risk/Reward
 
     # Execute full setup match
     if (in_uptrend and pulled_back and bullish_recovery and low_vol_pullback and 
@@ -196,11 +194,12 @@ def calc_inst_ema_pullback_v3(ticker, df, params):
         
         return {
             "Ticker": ticker, 
-            "Entry Price": round(curr['Close'], 2), 
+            "Entry": round(entry_price, 2), 
             "Stop Loss": round(sl, 2), 
-            "Fib Target (1.618)": round(fib_target, 2),
+            "T1 (1:1)": round(t1, 2),
+            "T2 (1:2)": round(t2, 2),
+            "T3 (1:3)": round(t3, 2),
             "Risk %": f"{round(risk_pct, 2)}%", 
-            "RSI / ADX": f"{round(curr['rsi14'], 1)} / {round(curr['adx'], 1)}",
             "Signal": "🟢 V3 SETUP BUY"
         }
     return None
