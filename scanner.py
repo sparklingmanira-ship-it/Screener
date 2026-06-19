@@ -4,6 +4,7 @@ import pandas as pd
 from tvDatafeed import TvDatafeed, Interval
 import concurrent.futures
 import os
+import math
 
 # --- INITIALIZATION ---
 @st.cache_resource
@@ -47,7 +48,7 @@ selected_strategy = st.sidebar.selectbox(
     "Which strategy do you want to run?",
     [
         "Hidden Swing Strategy", 
-        "Institutional 10EMA Pullback",
+        "Institutional EMA Pullback v3",
         "SMA 14/28 Crossover",
         "NN50 EMA + Volume Scanner"
     ]
@@ -62,9 +63,9 @@ if selected_strategy == "Hidden Swing Strategy":
     params['min_strength'] = st.sidebar.number_input("Min 1-Month Return (%)", value=5.0, step=1.0)
     params['max_cons'] = st.sidebar.number_input("Max Consolidation Range (%)", value=3.0, step=0.5)
 
-elif selected_strategy == "Institutional 10EMA Pullback":
-    params['ema_len'] = st.sidebar.number_input("EMA Length", value=10, step=1)
-    params['max_risk'] = st.sidebar.number_input("Max Risk %", value=3.0, step=0.5)
+elif selected_strategy == "Institutional EMA Pullback v3":
+    params['atr_mult'] = st.sidebar.number_input("ATR SL Multiplier", value=1.5, step=0.1, min_value=1.0, max_value=3.0)
+    params['adx_thresh'] = st.sidebar.number_input("Min ADX for Entry", value=20, step=1, min_value=15, max_value=35)
 
 elif selected_strategy == "SMA 14/28 Crossover":
     params['fast_sma'] = st.sidebar.number_input("Fast SMA Length", value=14, step=1)
@@ -124,27 +125,73 @@ def calc_hidden_swing(ticker, df, params):
         return {"Ticker": ticker, "Close": round(current_close, 2), "1M Return": f"{round(month_return, 1)}%", "7D Range": f"{round(cons_range, 1)}%", "Signal": "🟢 SETUP READY"}
     return None
 
-def calc_10ema_pullback(ticker, df, params):
-    ema_len = params['ema_len']
-    df[f'ema{ema_len}'] = ta.ema(df['Close'], ema_len)
+def calc_inst_ema_pullback_v3(ticker, df, params):
+    # Macro Trend EMAs
+    df['ema10']  = ta.ema(df['Close'], 10)
+    df['ema21']  = ta.ema(df['Close'], 21)
+    df['ema50']  = ta.ema(df['Close'], 50)
+    df['ema200'] = ta.ema(df['Close'], 200)
+
+    # Momentum & Volatility Indicators
+    df['atr14'] = ta.atr(df['High'], df['Low'], df['Close'], 14)
+    df['rsi14'] = ta.rsi(df['Close'], 14)
     df['vol_sma10'] = ta.sma(df['Volume'], 10)
-    
-    curr_close = df['Close'].iloc[-1]
-    curr_open  = df['Open'].iloc[-1]
-    curr_ema   = df[f'ema{ema_len}'].iloc[-1]
-    
-    in_uptrend = curr_close > curr_ema
-    ema_1, ema_2, ema_3 = df[f'ema{ema_len}'].iloc[-2], df[f'ema{ema_len}'].iloc[-3], df[f'ema{ema_len}'].iloc[-4]
-    
-    pulled_back = (df['Low'].iloc[-2] <= ema_1 * 1.02) or (df['Low'].iloc[-3] <= ema_2 * 1.02) or (df['Low'].iloc[-4] <= ema_3 * 1.02)
-    bullish_recovery = (curr_close > curr_open) and (curr_close > curr_ema)
-    low_vol = df['Volume'].iloc[-1] < (df['vol_sma10'].iloc[-1] * 0.9)
-    
-    swing_low = df['Low'].rolling(window=5).min().iloc[-1]
-    risk_pct = ((curr_close - swing_low) / curr_close) * 100
-    
-    if in_uptrend and pulled_back and bullish_recovery and low_vol and (risk_pct <= params['max_risk']):
-        return {"Ticker": ticker, "Close": round(curr_close, 2), "Risk %": f"{round(risk_pct, 2)}%", "Stop Loss": round(swing_low, 2), "Signal": "🟢 10EMA BUY"}
+    df['atr_sma20'] = ta.sma(df['atr14'], 20)
+    df['swing_low_5'] = df['Low'].rolling(window=5).min()
+
+    # ADX Calculation
+    adx_df = ta.adx(df['High'], df['Low'], df['Close'], 14)
+    if adx_df is not None and not adx_df.empty:
+        df['adx']      = adx_df.iloc[:, 0]
+        df['di_plus']  = adx_df.iloc[:, 1]
+        df['di_minus'] = adx_df.iloc[:, 2]
+    else:
+        return None
+
+    # Current and Historical Rows needed for condition checks
+    curr = df.iloc[-1]
+    prev1 = df.iloc[-2]
+    prev2 = df.iloc[-3]
+    prev3 = df.iloc[-4]
+
+    # 1. Macro Trend Filter (Triple EMA)
+    in_uptrend = (curr['Close'] > curr['ema21']) and (curr['ema21'] > curr['ema50']) and (curr['ema50'] > curr['ema200'])
+
+    # 2. Dynamic Pullback Zone & Recovery
+    pullback_zone = curr['ema10'] + (curr['atr14'] * 0.5)
+    pulled_back = (prev1['Low'] <= pullback_zone) or (prev2['Low'] <= pullback_zone) or (prev3['Low'] <= pullback_zone)
+    bullish_recovery = (curr['Close'] > curr['Open']) and (curr['Close'] > curr['ema10'])
+
+    # 3. Volume Filters
+    low_vol_pullback = prev1['Volume'] < (curr['vol_sma10'] * 0.85)
+    good_recovery_vol = curr['Volume'] >= (curr['vol_sma10'] * 1.20)
+
+    # 4. Momentum Filters
+    rsi_ok = 45 <= curr['rsi14'] <= 75
+    trend_strong = (curr['adx'] >= params['adx_thresh']) and (curr['di_plus'] > curr['di_minus'])
+
+    # 5. Consolidation Guard
+    not_consolidating = curr['atr14'] >= (curr['atr_sma20'] * 0.70)
+
+    # 6. Stop Loss (ATR-based dynamic & Risk limit)
+    atr_sl = curr['swing_low_5'] - (curr['atr14'] * params['atr_mult'])
+    floor_sl = curr['Close'] * 0.94
+    sl = max(atr_sl, floor_sl)
+    risk_pct = ((curr['Close'] - sl) / curr['Close']) * 100
+    acceptable_risk = risk_pct <= 7.0
+
+    # Execute full setup match
+    if (in_uptrend and pulled_back and bullish_recovery and low_vol_pullback and 
+        good_recovery_vol and rsi_ok and trend_strong and not_consolidating and acceptable_risk):
+        
+        return {
+            "Ticker": ticker, 
+            "Close": round(curr['Close'], 2), 
+            "Risk %": f"{round(risk_pct, 2)}%", 
+            "Stop Loss": round(sl, 2), 
+            "RSI / ADX": f"{round(curr['rsi14'], 1)} / {round(curr['adx'], 1)}",
+            "Signal": "🟢 Setup V3 BUY"
+        }
     return None
 
 def calc_sma_crossover(ticker, df, params):
@@ -152,7 +199,6 @@ def calc_sma_crossover(ticker, df, params):
     df['sma_fast'] = ta.sma(df['Close'], fast_len)
     df['sma_slow'] = ta.sma(df['Close'], slow_len)
     
-    # Current and previous values for crossover check
     fast_curr, fast_prev = df['sma_fast'].iloc[-1], df['sma_fast'].iloc[-2]
     slow_curr, slow_prev = df['sma_slow'].iloc[-1], df['sma_slow'].iloc[-2]
     
@@ -174,18 +220,14 @@ def calc_nn50_ema(ticker, df, params):
     curr_close = df['Close'].iloc[-1]
     curr_vol = df['Volume'].iloc[-1]
     
-    # 1. Volume Condition
     high_vol = curr_vol > (df['vol_sma20'].iloc[-1] * params['vol_mult'])
     
-    # 2. 20 EMA Condition
     dist20 = abs(curr_close - df['ema20'].iloc[-1]) / df['ema20'].iloc[-1] * 100
     near20 = (dist20 <= params['prox_20']) and (df['ema20'].iloc[-1] > df['ema20'].iloc[-2])
     
-    # 3. 50 EMA Condition
     dist50 = abs(curr_close - df['ema50'].iloc[-1]) / df['ema50'].iloc[-1] * 100
     near50 = (dist50 <= params['prox_50']) and (curr_close > df['ema50'].iloc[-1]) and (df['ema50'].iloc[-1] >= df['ema50'].iloc[-2])
     
-    # 4. RSI Filter
     curr_rsi = df['rsi14'].iloc[-1]
     rsi_ok = 45 <= curr_rsi <= 60
     
@@ -203,6 +245,7 @@ def calc_nn50_ema(ticker, df, params):
 def scan_stock(ticker, strategy_name, strategy_params):
     try:
         clean_ticker = str(ticker).strip().replace('.NS', '')
+        # Pulled 250 bars to assure enough history for the EMA 200 requirement
         df = tv.get_hist(symbol=clean_ticker, exchange='NSE', interval=Interval.in_daily, n_bars=250)
         
         if df is None or df.empty or len(df) < 200:
@@ -213,8 +256,8 @@ def scan_stock(ticker, strategy_name, strategy_params):
         # Router
         if strategy_name == "Hidden Swing Strategy":
             return calc_hidden_swing(clean_ticker, df, strategy_params)
-        elif strategy_name == "Institutional 10EMA Pullback":
-            return calc_10ema_pullback(clean_ticker, df, strategy_params)
+        elif strategy_name == "Institutional EMA Pullback v3":
+            return calc_inst_ema_pullback_v3(clean_ticker, df, strategy_params)
         elif strategy_name == "SMA 14/28 Crossover":
             return calc_sma_crossover(clean_ticker, df, strategy_params)
         elif strategy_name == "NN50 EMA + Volume Scanner":
