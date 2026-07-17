@@ -5,6 +5,7 @@ from tvDatafeed import TvDatafeed, Interval
 import concurrent.futures
 import os
 import math
+import time
 
 # --- INITIALIZATION ---
 @st.cache_resource
@@ -125,6 +126,12 @@ if st.sidebar.button("🗑️ Reset to Default Watchlist"):
     if os.path.exists(WATCHLIST_FILE):
         os.remove(WATCHLIST_FILE)
     st.rerun()
+
+st.sidebar.markdown("---")
+st.sidebar.header("4. API Rate Limiter")
+st.sidebar.write("Adjust these settings if you experience 'Connection timed out' errors.")
+batch_size = st.sidebar.slider("Batch Size (Concurrent Stocks)", min_value=1, max_value=20, value=5, help="Higher = Faster, but increases the risk of API bans.")
+sleep_time = st.sidebar.slider("Delay Between Batches (Seconds)", min_value=0.0, max_value=5.0, value=1.0, step=0.5, help="Set to 0.0 for full speed without restrictions.")
 
 # --- STRATEGY LOGIC FUNCTIONS ---
 
@@ -415,27 +422,35 @@ st.markdown(f"### Running: {selected_strategy}")
 
 if st.button("▶️ Scan Saved Watchlist", type="primary"):
     
-    st.write(f"Scanning {len(scan_list)} stocks. This may take a moment...")
+    st.write(f"Scanning {len(scan_list)} stocks. (Batch Size: {batch_size}, Delay: {sleep_time}s)...")
     
     progress_bar = st.progress(0)
     status_text = st.empty()
     live_table_placeholder = st.empty() 
     results = []
     
-    # Process completely concurrently without any artificial delays
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(scan_stock, t, selected_strategy, params): t for t in scan_list}
+    # Process dynamically based on user-configured rate limits
+    for i in range(0, len(scan_list), batch_size):
+        batch = scan_list[i:i + batch_size]
         
-        for i, future in enumerate(concurrent.futures.as_completed(futures)):
-            res = future.result()
-            if res:
-                results.append(res)
-                live_table_placeholder.dataframe(pd.DataFrame(results), use_container_width=True)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=batch_size) as executor:
+            futures = {executor.submit(scan_stock, t, selected_strategy, params): t for t in batch}
             
-            # Update progress indicators
-            current_prog = (i + 1) / len(scan_list)
-            progress_bar.progress(current_prog)
-            status_text.text(f"Processed {i+1}/{len(scan_list)} tickers...")
+            for future in concurrent.futures.as_completed(futures):
+                res = future.result()
+                if res:
+                    results.append(res)
+                    live_table_placeholder.dataframe(pd.DataFrame(results), use_container_width=True)
+        
+        # Update progress indicators
+        processed_count = min(i + batch_size, len(scan_list))
+        current_prog = processed_count / len(scan_list)
+        progress_bar.progress(current_prog)
+        status_text.text(f"Processed {processed_count}/{len(scan_list)} tickers...")
+        
+        # Apply user-defined sleep delay between batches if not finished
+        if processed_count < len(scan_list) and sleep_time > 0:
+            time.sleep(sleep_time) 
             
     st.success("Scan Complete!")
     
