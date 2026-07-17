@@ -83,6 +83,10 @@ elif selected_strategy == "Macro Darvas Box Breakout (Weekly Timeframe)":
     params['trend_sma_len'] = st.sidebar.number_input("Trend SMA Length (Weeks)", value=40, step=1)
     params['radar_pct'] = st.sidebar.number_input("Alert Proximity (%)", value=5.0, step=1.0) / 100
     params['use_trend_filter'] = st.sidebar.checkbox("Require 40-Week SMA Uptrend?", value=True)
+    
+    st.sidebar.markdown("**Smart Filters**")
+    params['req_vol'] = st.sidebar.checkbox("Require Volume > 10W Avg", value=True)
+    params['min_close_pct'] = st.sidebar.number_input("Min Close Near High (%)", value=50.0, step=5.0, help="50% means the candle closes in its upper half") / 100
 
 st.sidebar.markdown("---")
 st.sidebar.header("3. Watchlist Management")
@@ -249,16 +253,15 @@ def calc_nn50_ema(ticker, df, params):
     return None
 
 def calc_macro_box_breakout_weekly(ticker, df, params):
-    # Ensure enough weekly bars
     if len(df) < params['box_len'] + 2:
         return None
         
     box_len = params['box_len']
     
-    # Trend Filter
+    # Standard Trends & MAs
     df['macro_sma'] = ta.sma(df['Close'], params['trend_sma_len'])
+    df['vol_sma10'] = ta.sma(df['Volume'], 10)
     
-    # 1-bar shift equivalent for previous high/low calculations in PineScript
     df['prev_high'] = df['High'].rolling(window=box_len).max().shift(1)
     df['curr_low'] = df['Low'].rolling(window=box_len).min().shift(1)
     
@@ -268,30 +271,42 @@ def calc_macro_box_breakout_weekly(ticker, df, params):
     curr_low = curr['curr_low']
     curr_close = curr['Close']
     
-    # Trend Condition
+    # 1. Trend Filter
     is_uptrend = True
     if params['use_trend_filter']:
         is_uptrend = curr_close > curr['macro_sma']
     
-    # Box Validation
+    # 2. Box Validation
     box_height_pct = ((prev_high - curr_low) / curr_low)
     valid_box = box_height_pct <= params['max_box_height']
     
-    # Radar Condition (Approaching the top)
+    # 3. Volume Smart Filter
+    has_volume = True
+    if params['req_vol']:
+        has_volume = curr['Volume'] >= curr['vol_sma10']
+        
+    # 4. Closing Strength Smart Filter
+    candle_range = curr['High'] - curr['Low']
+    close_strength = True
+    if candle_range > 0:
+        close_pos = (curr_close - curr['Low']) / candle_range
+        close_strength = close_pos >= params['min_close_pct']
+    
+    # 5. Radar Proximity Condition
     radar_zone_level = prev_high * (1 - params['radar_pct'])
     is_approaching = (curr_close >= radar_zone_level) and (curr_close < (prev_high * 0.99))
     
-    # Core Scanner Requirement: Output ONLY Upcoming Breakouts
-    if is_approaching and valid_box and is_uptrend:
+    # Return Setup (Requires ALL filters to pass)
+    if is_approaching and valid_box and is_uptrend and has_volume and close_strength:
         dist_to_top = ((prev_high * 0.99) - curr_close) / curr_close * 100
         
         return {
             "Ticker": ticker, 
             "LTP (Weekly)": round(curr_close, 2), 
             "Box Resistance": round(prev_high, 2), 
-            "Box Support": round(curr_low, 2),
             "Gap to Breakout": f"{round(dist_to_top, 2)}%", 
-            "Signal": "🟡 APPROACHING BREAKOUT"
+            "Close Strength": "Strong 💪",
+            "Signal": "🟡 HIGH-PROBABILITY RADAR"
         }
     return None
 
@@ -300,12 +315,9 @@ def scan_stock(ticker, strategy_name, strategy_params):
     try:
         clean_ticker = str(ticker).strip().replace('.NS', '')
         
-        # Route interval request based on Strategy requirements
         if strategy_name == "Macro Darvas Box Breakout (Weekly Timeframe)":
-            # Fetch Weekly Interval
             df = tv.get_hist(symbol=clean_ticker, exchange='NSE', interval=Interval.in_weekly, n_bars=300)
         else:
-            # Default Daily Interval
             df = tv.get_hist(symbol=clean_ticker, exchange='NSE', interval=Interval.in_daily, n_bars=750)
         
         if df is None or df.empty:
@@ -313,7 +325,6 @@ def scan_stock(ticker, strategy_name, strategy_params):
             
         df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'volume': 'Volume', 'open': 'Open'}, inplace=True)
         
-        # Router
         if strategy_name == "Hidden Swing Strategy":
             return calc_hidden_swing(clean_ticker, df, strategy_params)
         elif strategy_name == "Institutional EMA Pullback v3":
