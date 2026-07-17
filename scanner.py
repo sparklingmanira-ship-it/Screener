@@ -51,7 +51,7 @@ selected_strategy = st.sidebar.selectbox(
         "Institutional EMA Pullback v3",
         "SMA 14/28 Crossover",
         "NN50 EMA + Volume Scanner",
-        "Macro Darvas Box Breakout"
+        "Macro Darvas Box Breakout (Weekly Timeframe)"
     ]
 )
 
@@ -77,8 +77,12 @@ elif selected_strategy == "NN50 EMA + Volume Scanner":
     params['prox_20'] = st.sidebar.number_input("20 EMA Proximity %", value=1.5, step=0.1)
     params['prox_50'] = st.sidebar.number_input("50 EMA Proximity %", value=2.0, step=0.1)
 
-elif selected_strategy == "Macro Darvas Box Breakout":
-    params['max_box_height'] = st.sidebar.number_input("Max Box Height/Depth (%)", value=60.0, step=5.0) / 100
+elif selected_strategy == "Macro Darvas Box Breakout (Weekly Timeframe)":
+    params['box_len'] = st.sidebar.number_input("Macro Box Length (Weeks)", value=52, step=1)
+    params['max_box_height'] = st.sidebar.number_input("Max Box Height (%)", value=60.0, step=5.0) / 100
+    params['trend_sma_len'] = st.sidebar.number_input("Trend SMA Length (Weeks)", value=40, step=1)
+    params['radar_pct'] = st.sidebar.number_input("Alert Proximity (%)", value=5.0, step=1.0) / 100
+    params['use_trend_filter'] = st.sidebar.checkbox("Require 40-Week SMA Uptrend?", value=True)
 
 st.sidebar.markdown("---")
 st.sidebar.header("3. Watchlist Management")
@@ -130,20 +134,17 @@ def calc_hidden_swing(ticker, df, params):
     return None
 
 def calc_inst_ema_pullback_v3(ticker, df, params):
-    # Macro Trend EMAs
     df['ema10']  = ta.ema(df['Close'], 10)
     df['ema21']  = ta.ema(df['Close'], 21)
     df['ema50']  = ta.ema(df['Close'], 50)
     df['ema200'] = ta.ema(df['Close'], 200)
 
-    # Momentum & Volatility Indicators
     df['atr14'] = ta.atr(df['High'], df['Low'], df['Close'], 14)
     df['rsi14'] = ta.rsi(df['Close'], 14)
     df['vol_sma10'] = ta.sma(df['Volume'], 10)
     df['atr_sma20'] = ta.sma(df['atr14'], 20)
     df['swing_low_5'] = df['Low'].rolling(window=5).min()
 
-    # ADX Calculation
     adx_df = ta.adx(df['High'], df['Low'], df['Close'], 14)
     if adx_df is not None and not adx_df.empty:
         df['adx']      = adx_df.iloc[:, 0]
@@ -152,49 +153,39 @@ def calc_inst_ema_pullback_v3(ticker, df, params):
     else:
         return None
 
-    # Current and Historical Rows needed for condition checks
     curr = df.iloc[-1]
     prev1 = df.iloc[-2]
     prev2 = df.iloc[-3]
     prev3 = df.iloc[-4]
 
-    # 1. Macro Trend Filter (Triple EMA)
     in_uptrend = (curr['Close'] > curr['ema21']) and (curr['ema21'] > curr['ema50']) and (curr['ema50'] > curr['ema200'])
 
-    # 2. Dynamic Pullback Zone & Recovery
     pullback_zone = curr['ema10'] + (curr['atr14'] * 0.5)
     pulled_back = (prev1['Low'] <= pullback_zone) or (prev2['Low'] <= pullback_zone) or (prev3['Low'] <= pullback_zone)
     bullish_recovery = (curr['Close'] > curr['Open']) and (curr['Close'] > curr['ema10'])
 
-    # 3. Volume Filters
     low_vol_pullback = prev1['Volume'] < (curr['vol_sma10'] * 0.85)
     good_recovery_vol = curr['Volume'] >= (curr['vol_sma10'] * 1.20)
 
-    # 4. Momentum Filters
     rsi_ok = 45 <= curr['rsi14'] <= 75
     trend_strong = (curr['adx'] >= params['adx_thresh']) and (curr['di_plus'] > curr['di_minus'])
 
-    # 5. Consolidation Guard
     not_consolidating = curr['atr14'] >= (curr['atr_sma20'] * 0.70)
 
-    # 6. Stop Loss (ATR-based dynamic & Risk limit)
     atr_sl = curr['swing_low_5'] - (curr['atr14'] * params['atr_mult'])
     floor_sl = curr['Close'] * 0.94
     sl = max(atr_sl, floor_sl)
     
-    # R:R Multiplier Logic
     entry_price = curr['Close']
     risk_points = entry_price - sl
     if risk_points <= 0: return None
     risk_pct = (risk_points / entry_price) * 100
     acceptable_risk = risk_pct <= 7.0
 
-    # 7. Risk/Reward Anchored Targets
-    t1 = entry_price + (risk_points * 1.0) # 1:1 Risk/Reward
-    t2 = entry_price + (risk_points * 2.0) # 1:2 Risk/Reward
-    t3 = entry_price + (risk_points * 3.0) # 1:3 Risk/Reward
+    t1 = entry_price + (risk_points * 1.0) 
+    t2 = entry_price + (risk_points * 2.0) 
+    t3 = entry_price + (risk_points * 3.0) 
 
-    # Execute full setup match
     if (in_uptrend and pulled_back and bullish_recovery and low_vol_pullback and 
         good_recovery_vol and rsi_ok and trend_strong and not_consolidating and acceptable_risk):
         
@@ -257,52 +248,50 @@ def calc_nn50_ema(ticker, df, params):
     
     return None
 
-def calc_macro_box_breakout(ticker, df, params):
-    # Require enough data for a macro multi-year view
-    if len(df) < 260:
+def calc_macro_box_breakout_weekly(ticker, df, params):
+    # Ensure enough weekly bars
+    if len(df) < params['box_len'] + 2:
         return None
         
-    # Calculate 52-Week (250 Days) High and Low (The "Blue Lines")
-    df['macro_high'] = df['High'].rolling(window=250).max()
-    df['macro_low'] = df['Low'].rolling(window=250).min()
+    box_len = params['box_len']
     
-    # 20-day swing low for the Stop Loss
-    df['swing_low_20'] = df['Low'].rolling(window=20).min()
+    # Trend Filter
+    df['macro_sma'] = ta.sma(df['Close'], params['trend_sma_len'])
     
-    curr_close = df['Close'].iloc[-1]
-    prev_high = df['macro_high'].iloc[-2] # The resistance line right before today
-    macro_low = df['macro_low'].iloc[-1]
+    # 1-bar shift equivalent for previous high/low calculations in PineScript
+    df['prev_high'] = df['High'].rolling(window=box_len).max().shift(1)
+    df['curr_low'] = df['Low'].rolling(window=box_len).min().shift(1)
     
-    # Condition 1: Breakout! Current close is pushing above or within 1% of the 52-week box high
-    is_breakout = curr_close >= (prev_high * 0.99)
+    curr = df.iloc[-1]
     
-    # Condition 2: Ensure it's breaking out of a tight consolidation box, not just a straight vertical line
-    box_height = (prev_high - macro_low) / macro_low
-    valid_box = box_height <= params.get('max_box_height', 0.60) # Box shouldn't be wider than X% top to bottom
+    prev_high = curr['prev_high']
+    curr_low = curr['curr_low']
+    curr_close = curr['Close']
     
-    if is_breakout and valid_box:
-        sl = df['swing_low_20'].iloc[-1]
-        
-        # R:R Multiplier Logic
-        risk_points = curr_close - sl
-        if risk_points <= 0: return None
-        
-        risk_pct = (risk_points / curr_close) * 100
-        
-        # Aggressive Macro Targets (1.5x, 2.5x, 4x)
-        t1 = curr_close + (risk_points * 1.5) 
-        t2 = curr_close + (risk_points * 2.5) 
-        t3 = curr_close + (risk_points * 4.0) 
+    # Trend Condition
+    is_uptrend = True
+    if params['use_trend_filter']:
+        is_uptrend = curr_close > curr['macro_sma']
+    
+    # Box Validation
+    box_height_pct = ((prev_high - curr_low) / curr_low)
+    valid_box = box_height_pct <= params['max_box_height']
+    
+    # Radar Condition (Approaching the top)
+    radar_zone_level = prev_high * (1 - params['radar_pct'])
+    is_approaching = (curr_close >= radar_zone_level) and (curr_close < (prev_high * 0.99))
+    
+    # Core Scanner Requirement: Output ONLY Upcoming Breakouts
+    if is_approaching and valid_box and is_uptrend:
+        dist_to_top = ((prev_high * 0.99) - curr_close) / curr_close * 100
         
         return {
             "Ticker": ticker, 
-            "Entry": round(curr_close, 2), 
-            "Stop Loss": round(sl, 2), 
-            "T1": round(t1, 2),
-            "T2": round(t2, 2),
-            "T3": round(t3, 2),
-            "Risk %": f"{round(risk_pct, 2)}%", 
-            "Signal": "🚀 MACRO BOX BREAKOUT"
+            "LTP (Weekly)": round(curr_close, 2), 
+            "Box Resistance": round(prev_high, 2), 
+            "Box Support": round(curr_low, 2),
+            "Gap to Breakout": f"{round(dist_to_top, 2)}%", 
+            "Signal": "🟡 APPROACHING BREAKOUT"
         }
     return None
 
@@ -310,10 +299,16 @@ def calc_macro_box_breakout(ticker, df, params):
 def scan_stock(ticker, strategy_name, strategy_params):
     try:
         clean_ticker = str(ticker).strip().replace('.NS', '')
-        # Pulled 750 bars to assure enough history for the Macro Box Breakout strategy
-        df = tv.get_hist(symbol=clean_ticker, exchange='NSE', interval=Interval.in_daily, n_bars=750)
         
-        if df is None or df.empty or len(df) < 200:
+        # Route interval request based on Strategy requirements
+        if strategy_name == "Macro Darvas Box Breakout (Weekly Timeframe)":
+            # Fetch Weekly Interval
+            df = tv.get_hist(symbol=clean_ticker, exchange='NSE', interval=Interval.in_weekly, n_bars=300)
+        else:
+            # Default Daily Interval
+            df = tv.get_hist(symbol=clean_ticker, exchange='NSE', interval=Interval.in_daily, n_bars=750)
+        
+        if df is None or df.empty:
             return None 
             
         df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'volume': 'Volume', 'open': 'Open'}, inplace=True)
@@ -327,8 +322,8 @@ def scan_stock(ticker, strategy_name, strategy_params):
             return calc_sma_crossover(clean_ticker, df, strategy_params)
         elif strategy_name == "NN50 EMA + Volume Scanner":
             return calc_nn50_ema(clean_ticker, df, strategy_params)
-        elif strategy_name == "Macro Darvas Box Breakout": 
-            return calc_macro_box_breakout(clean_ticker, df, strategy_params)
+        elif strategy_name == "Macro Darvas Box Breakout (Weekly Timeframe)": 
+            return calc_macro_box_breakout_weekly(clean_ticker, df, strategy_params)
             
     except Exception:
         return None
