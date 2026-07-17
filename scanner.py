@@ -2,9 +2,9 @@ import streamlit as st
 import pandas_ta as ta
 import pandas as pd
 from tvDatafeed import TvDatafeed, Interval
-import concurrent.futures
 import os
 import math
+import time
 
 # --- INITIALIZATION ---
 @st.cache_resource
@@ -51,7 +51,8 @@ selected_strategy = st.sidebar.selectbox(
         "Institutional EMA Pullback v3",
         "SMA 14/28 Crossover",
         "NN50 EMA + Volume Scanner",
-        "Macro Darvas Box Breakout (Weekly Timeframe)"
+        "Macro Darvas Box Breakout (Weekly Timeframe)",
+        "Weekly Trend & Momentum"
     ]
 )
 
@@ -88,6 +89,17 @@ elif selected_strategy == "Macro Darvas Box Breakout (Weekly Timeframe)":
     params['req_vol'] = st.sidebar.checkbox("Require Volume > 10W Avg", value=True)
     params['min_close_pct'] = st.sidebar.number_input("Min Close Near High (%)", value=50.0, step=5.0, help="50% means the candle closes in its upper half") / 100
 
+elif selected_strategy == "Weekly Trend & Momentum":
+    st.sidebar.markdown("**Lagging Trend Filters**")
+    params['rsi_thresh'] = st.sidebar.number_input("Min RSI Level", value=40, step=1)
+    params['adx_thresh'] = st.sidebar.number_input("Min ADX Level", value=20, step=1)
+    
+    st.sidebar.markdown("**Leading Smart Filters**")
+    params['req_cmf'] = st.sidebar.checkbox("Require CMF > 0 (Accumulation)", value=True, help="Institutions are buying")
+    params['req_stochrsi'] = st.sidebar.checkbox("Require StochRSI Bullish", value=True, help="Momentum velocity is shifting up")
+    params['req_inside_bar'] = st.sidebar.checkbox("Require Inside Bar (Contraction)", value=False, help="Volatility has dried up")
+    params['req_hidden_div'] = st.sidebar.checkbox("Require Hidden Bull Div", value=False, help="Price forms higher low while RSI forms lower low")
+
 st.sidebar.markdown("---")
 st.sidebar.header("3. Watchlist Management")
 st.sidebar.info(f"📁 **{len(scan_list)}** stocks currently saved.")
@@ -111,7 +123,7 @@ if uploaded_file is not None:
 
 if st.sidebar.button("🗑️ Reset to Default Watchlist"):
     if os.path.exists(WATCHLIST_FILE):
-        os.remove(WATCHLIST_FILE)
+        os.remove(WATCHPASS_FILE)
     st.rerun()
 
 # --- STRATEGY LOGIC FUNCTIONS ---
@@ -191,7 +203,7 @@ def calc_inst_ema_pullback_v3(ticker, df, params):
     t3 = entry_price + (risk_points * 3.0) 
 
     if (in_uptrend and pulled_back and bullish_recovery and low_vol_pullback and 
-        good_recovery_vol and rsi_ok and trend_strong and not_consolidating and acceptable_risk):
+        good_recovery_vol and rsi_ok and trend_strong nudge not_consolidating and acceptable_risk):
         
         return {
             "Ticker": ticker, 
@@ -258,7 +270,6 @@ def calc_macro_box_breakout_weekly(ticker, df, params):
         
     box_len = params['box_len']
     
-    # Standard Trends & MAs
     df['macro_sma'] = ta.sma(df['Close'], params['trend_sma_len'])
     df['vol_sma10'] = ta.sma(df['Volume'], 10)
     
@@ -271,32 +282,26 @@ def calc_macro_box_breakout_weekly(ticker, df, params):
     curr_low = curr['curr_low']
     curr_close = curr['Close']
     
-    # 1. Trend Filter
     is_uptrend = True
     if params['use_trend_filter']:
         is_uptrend = curr_close > curr['macro_sma']
     
-    # 2. Box Validation
     box_height_pct = ((prev_high - curr_low) / curr_low)
     valid_box = box_height_pct <= params['max_box_height']
     
-    # 3. Volume Smart Filter
     has_volume = True
     if params['req_vol']:
         has_volume = curr['Volume'] >= curr['vol_sma10']
         
-    # 4. Closing Strength Smart Filter
     candle_range = curr['High'] - curr['Low']
     close_strength = True
     if candle_range > 0:
         close_pos = (curr_close - curr['Low']) / candle_range
         close_strength = close_pos >= params['min_close_pct']
     
-    # 5. Radar Proximity Condition
     radar_zone_level = prev_high * (1 - params['radar_pct'])
     is_approaching = (curr_close >= radar_zone_level) and (curr_close < (prev_high * 0.99))
     
-    # Return Setup (Requires ALL filters to pass)
     if is_approaching and valid_box and is_uptrend and has_volume and close_strength:
         dist_to_top = ((prev_high * 0.99) - curr_close) / curr_close * 100
         
@@ -306,7 +311,68 @@ def calc_macro_box_breakout_weekly(ticker, df, params):
             "Box Resistance": round(prev_high, 2), 
             "Gap to Breakout": f"{round(dist_to_top, 2)}%", 
             "Close Strength": "Strong 💪",
-            "Signal": "🟡 HIGH-PROBABILITY RADAR"
+            "Signal": "🟡 APPROACHING BREAKOUT"
+        }
+    return None
+
+def calc_weekly_trend_momentum(ticker, df, params):
+    if len(df) < 50: return None
+    
+    # --- CORE TREND (Lagging) ---
+    df['sma40'] = ta.sma(df['Close'], 40)
+    df['rsi14'] = ta.rsi(df['Close'], 14)
+    
+    adx_df = ta.adx(df['High'], df['Low'], df['Close'], 14)
+    if adx_df is not None and not adx_df.empty:
+        df['adx'] = adx_df.iloc[:, 0]
+    else:
+        return None
+        
+    # --- LEADING INDICATORS ---
+    df['cmf'] = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20)
+    
+    stochrsi = ta.stochrsi(df['Close'], length=14, rsi_length=14, k=3, d=3)
+    if stochrsi is not None and not stochrsi.empty:
+        df['stoch_k'] = stochrsi.iloc[:, 0]
+        df['stoch_d'] = stochrsi.iloc[:, 1]
+    else:
+        return None
+        
+    df['inside_bar'] = (df['High'] < df['High'].shift(1)) & (df['Low'] > df['Low'].shift(1))
+    
+    curr = df.iloc[-1]
+    prev = df.iloc[-2]
+    
+    # --- EVALUATE CONDITIONS ---
+    uptrend = curr['Close'] > curr['sma40']
+    rsi_ok = curr['rsi14'] >= params.get('rsi_thresh', 40)
+    adx_ok = curr['adx'] >= params.get('adx_thresh', 20)
+    
+    cmf_ok = True
+    if params['req_cmf']:
+        cmf_ok = curr['cmf'] > 0
+        
+    stoch_ok = True
+    if params['req_stochrsi']:
+        stoch_ok = (curr['stoch_k'] > curr['stoch_d']) and (curr['stoch_k'] < 80)
+        
+    inside_ok = True
+    if params['req_inside_bar']:
+        inside_ok = curr['inside_bar'] or prev['inside_bar']
+        
+    div_ok = True
+    if params['req_hidden_div']:
+        recent_low = df['Low'].shift(1).rolling(10).min().iloc[-1]
+        recent_rsi_low = df['rsi14'].shift(1).rolling(10).min().iloc[-1]
+        div_ok = (curr['Low'] > recent_low) and (curr['rsi14'] < recent_rsi_low)
+    
+    if uptrend and rsi_ok and adx_ok and cmf_ok and stoch_ok and inside_ok and div_ok:
+        return {
+            "Ticker": ticker,
+            "Close (Weekly)": round(curr['Close'], 2),
+            "RSI": round(curr['rsi14'], 1),
+            "CMF": round(curr['cmf'], 2),
+            "Signal": "🔥 PRO SETUP"
         }
     return None
 
@@ -315,7 +381,8 @@ def scan_stock(ticker, strategy_name, strategy_params):
     try:
         clean_ticker = str(ticker).strip().replace('.NS', '')
         
-        if strategy_name == "Macro Darvas Box Breakout (Weekly Timeframe)":
+        # Route interval requests based on Strategy requirements
+        if strategy_name in ["Macro Darvas Box Breakout (Weekly Timeframe)", "Weekly Trend & Momentum"]:
             df = tv.get_hist(symbol=clean_ticker, exchange='NSE', interval=Interval.in_weekly, n_bars=300)
         else:
             df = tv.get_hist(symbol=clean_ticker, exchange='NSE', interval=Interval.in_daily, n_bars=750)
@@ -325,6 +392,7 @@ def scan_stock(ticker, strategy_name, strategy_params):
             
         df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'volume': 'Volume', 'open': 'Open'}, inplace=True)
         
+        # Router
         if strategy_name == "Hidden Swing Strategy":
             return calc_hidden_swing(clean_ticker, df, strategy_params)
         elif strategy_name == "Institutional EMA Pullback v3":
@@ -335,6 +403,8 @@ def scan_stock(ticker, strategy_name, strategy_params):
             return calc_nn50_ema(clean_ticker, df, strategy_params)
         elif strategy_name == "Macro Darvas Box Breakout (Weekly Timeframe)": 
             return calc_macro_box_breakout_weekly(clean_ticker, df, strategy_params)
+        elif strategy_name == "Weekly Trend & Momentum":
+            return calc_weekly_trend_momentum(clean_ticker, df, strategy_params)
             
     except Exception:
         return None
@@ -345,25 +415,28 @@ st.markdown(f"### Running: {selected_strategy}")
 
 if st.button("▶️ Scan Saved Watchlist", type="primary"):
     
-    st.write(f"Scanning {len(scan_list)} stocks. This may take a moment...")
+    st.write(f"Scanning {len(scan_list)} stocks sequentially to avoid rate limits. This will take a moment...")
     
     progress_bar = st.progress(0)
     status_text = st.empty()
     live_table_placeholder = st.empty() 
     results = []
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        futures = {executor.submit(scan_stock, t, selected_strategy, params): t for t in scan_list}
+    # Process sequentially instead of concurrently to honor TradingView's connection limits
+    for i, ticker in enumerate(scan_list):
+        res = scan_stock(ticker, selected_strategy, params)
         
-        for i, future in enumerate(concurrent.futures.as_completed(futures)):
-            res = future.result()
-            if res:
-                results.append(res)
-                live_table_placeholder.dataframe(pd.DataFrame(results), use_container_width=True)
-            
-            current_prog = (i + 1) / len(scan_list)
-            progress_bar.progress(current_prog)
-            status_text.text(f"Processed {i+1}/{len(scan_list)} tickers...")
+        if res:
+            results.append(res)
+            live_table_placeholder.dataframe(pd.DataFrame(results), use_container_width=True)
+        
+        # Update progress indicators
+        current_prog = (i + 1) / len(scan_list)
+        progress_bar.progress(current_prog)
+        status_text.text(f"Processed {i+1}/{len(scan_list)} tickers ({ticker})...")
+        
+        # Sleep for 0.5 seconds to prevent network drops and timeouts
+        time.sleep(0.5) 
             
     st.success("Scan Complete!")
     
