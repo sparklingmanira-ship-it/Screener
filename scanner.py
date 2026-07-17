@@ -203,7 +203,7 @@ def calc_inst_ema_pullback_v3(ticker, df, params):
     t3 = entry_price + (risk_points * 3.0) 
 
     if (in_uptrend and pulled_back and bullish_recovery and low_vol_pullback and 
-        good_recovery_vol and rsi_ok and trend_strong nudge not_consolidating and acceptable_risk):
+        good_recovery_vol and rsi_ok and trend_strong and not_consolidating and acceptable_risk):
         
         return {
             "Ticker": ticker, 
