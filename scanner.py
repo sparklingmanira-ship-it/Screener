@@ -2,6 +2,7 @@ import streamlit as st
 import pandas_ta as ta
 import pandas as pd
 from tvDatafeed import TvDatafeed, Interval
+import concurrent.futures
 import os
 import math
 import time
@@ -123,7 +124,7 @@ if uploaded_file is not None:
 
 if st.sidebar.button("🗑️ Reset to Default Watchlist"):
     if os.path.exists(WATCHLIST_FILE):
-        os.remove(WATCHPASS_FILE)
+        os.remove(WATCHLIST_FILE)
     st.rerun()
 
 # --- STRATEGY LOGIC FUNCTIONS ---
@@ -202,6 +203,7 @@ def calc_inst_ema_pullback_v3(ticker, df, params):
     t2 = entry_price + (risk_points * 2.0) 
     t3 = entry_price + (risk_points * 3.0) 
 
+    # SYNTAX FIX APPLIED HERE
     if (in_uptrend and pulled_back and bullish_recovery and low_vol_pullback and 
         good_recovery_vol and rsi_ok and trend_strong and not_consolidating and acceptable_risk):
         
@@ -410,33 +412,42 @@ def scan_stock(ticker, strategy_name, strategy_params):
         return None
     return None
 
-# --- UI EXECUTION ---
+# --- BATCHED UI EXECUTION ---
 st.markdown(f"### Running: {selected_strategy}")
 
 if st.button("▶️ Scan Saved Watchlist", type="primary"):
     
-    st.write(f"Scanning {len(scan_list)} stocks sequentially to avoid rate limits. This will take a moment...")
+    st.write(f"Scanning {len(scan_list)} stocks in batches to balance speed and API limits. This may take a moment...")
     
     progress_bar = st.progress(0)
     status_text = st.empty()
     live_table_placeholder = st.empty() 
     results = []
     
-    # Process sequentially instead of concurrently to honor TradingView's connection limits
-    for i, ticker in enumerate(scan_list):
-        res = scan_stock(ticker, selected_strategy, params)
+    # Process in chunks to balance speed and avoid TradingView rate limits
+    batch_size = 5 
+    
+    for i in range(0, len(scan_list), batch_size):
+        batch = scan_list[i:i + batch_size]
         
-        if res:
-            results.append(res)
-            live_table_placeholder.dataframe(pd.DataFrame(results), use_container_width=True)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=batch_size) as executor:
+            futures = {executor.submit(scan_stock, t, selected_strategy, params): t for t in batch}
+            
+            for future in concurrent.futures.as_completed(futures):
+                res = future.result()
+                if res:
+                    results.append(res)
+                    live_table_placeholder.dataframe(pd.DataFrame(results), use_container_width=True)
         
         # Update progress indicators
-        current_prog = (i + 1) / len(scan_list)
+        processed_count = min(i + batch_size, len(scan_list))
+        current_prog = processed_count / len(scan_list)
         progress_bar.progress(current_prog)
-        status_text.text(f"Processed {i+1}/{len(scan_list)} tickers ({ticker})...")
+        status_text.text(f"Processed {processed_count}/{len(scan_list)} tickers...")
         
-        # Sleep for 0.5 seconds to prevent network drops and timeouts
-        time.sleep(0.5) 
+        # Sleep for 1 second between batches to prevent network drops
+        if processed_count < len(scan_list):
+            time.sleep(1.0) 
             
     st.success("Scan Complete!")
     
