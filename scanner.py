@@ -48,6 +48,7 @@ st.sidebar.header("1. Select Strategy")
 selected_strategy = st.sidebar.selectbox(
     "Which strategy do you want to run?",
     [
+        "HACOLT & Range Filter Screener",
         "Hidden Swing Strategy", 
         "Institutional EMA Pullback v3",
         "SMA 14/28 Crossover",
@@ -61,7 +62,22 @@ st.sidebar.markdown("---")
 st.sidebar.header("2. Strategy Parameters")
 
 params = {}
-if selected_strategy == "Hidden Swing Strategy":
+
+# Timeframe Selector (Applies dynamically to supported strategies)
+timeframe = st.sidebar.selectbox(
+    "Select Timeframe", 
+    ["4 Hours", "1 Day", "1 Week", "1 Month"], 
+    index=1,
+    help="Note: Darvas Box and Weekly Momentum permanently override this to 1 Week."
+)
+params['timeframe'] = timeframe
+
+if selected_strategy == "HACOLT & Range Filter Screener":
+    params['rf_period'] = st.sidebar.number_input("Range Filter Period", value=20, step=1)
+    params['rf_mult'] = st.sidebar.number_input("Range Filter Multiplier", value=3.0, step=0.1)
+    params['hacolt_period'] = st.sidebar.number_input("HACOLT Smooth Period", value=55, step=1)
+
+elif selected_strategy == "Hidden Swing Strategy":
     params['req_trend'] = st.sidebar.checkbox("Require Stage 2 Trend (> 200 & 50 EMA)", value=True)
     params['min_strength'] = st.sidebar.number_input("Min 1-Month Return (%)", value=5.0, step=1.0)
     params['max_cons'] = st.sidebar.number_input("Max Consolidation Range (%)", value=3.0, step=0.5)
@@ -134,6 +150,83 @@ batch_size = st.sidebar.slider("Batch Size (Concurrent Stocks)", min_value=1, ma
 sleep_time = st.sidebar.slider("Delay Between Batches (Seconds)", min_value=0.0, max_value=5.0, value=1.0, step=0.5, help="Set to 0.0 for full speed without restrictions.")
 
 # --- STRATEGY LOGIC FUNCTIONS ---
+
+def calc_hacolt_rf(ticker, df, params):
+    if len(df) < params['hacolt_period'] + 10:
+        return None 
+        
+    rf_period = params['rf_period']
+    rf_mult = params['rf_mult']
+    hacolt_period = params['hacolt_period']
+
+    # 1. RANGE FILTER LOGIC
+    df['smooth_price'] = ta.ema(df['Close'], length=5)
+    df['tr'] = ta.true_range(df['High'], df['Low'], df['Close'])
+    df['smooth_rng'] = ta.ema(df['tr'], length=rf_period) * rf_mult
+
+    filt_val = [0.0] * len(df)
+    rf_trend = [0] * len(df)
+    
+    for i in range(1, len(df)):
+        prev_filt = filt_val[i-1]
+        smooth_price = df['smooth_price'].iloc[i]
+        prev_smooth = df['smooth_price'].iloc[i-1]
+        smooth_rng = df['smooth_rng'].iloc[i]
+        
+        if pd.isna(smooth_price) or pd.isna(smooth_rng):
+            filt_val[i] = prev_filt
+            continue
+            
+        up_bound = smooth_price - smooth_rng
+        dn_bound = smooth_price + smooth_rng
+        
+        if smooth_price > prev_filt:
+            filt_val[i] = prev_filt if smooth_price < dn_bound else dn_bound
+        else:
+            filt_val[i] = prev_filt if smooth_price > up_bound else up_bound
+            
+        if smooth_price > filt_val[i] and prev_smooth <= prev_filt:
+            rf_trend[i] = 1
+        elif smooth_price < filt_val[i] and prev_smooth >= prev_filt:
+            rf_trend[i] = -1
+        else:
+            rf_trend[i] = rf_trend[i-1]
+
+    df['rf_trend'] = rf_trend
+    
+    # 2. HACOLT LOGIC 
+    df['ha_close'] = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
+    hacolt_ema1 = ta.ema(df['ha_close'], length=hacolt_period)
+    hacolt_ema2 = ta.ema(hacolt_ema1, length=hacolt_period)
+    df['hacolt_zl'] = hacolt_ema1 + (hacolt_ema1 - hacolt_ema2)
+    
+    df['hacolt_zl_highest_3'] = df['hacolt_zl'].rolling(3).max().shift(1)
+    df['hacolt_zl_lowest_3']  = df['hacolt_zl'].rolling(3).min().shift(1)
+    
+    def get_hacolt_state(row):
+        if row['hacolt_zl'] > row['hacolt_zl_highest_3']: return 1
+        elif row['hacolt_zl'] < row['hacolt_zl_lowest_3']: return -1
+        return 0
+        
+    df['hacolt_state'] = df.apply(get_hacolt_state, axis=1)
+    
+    # 3. COMBINED STRATEGY SCREENER ENGINE
+    df['system_state'] = 0
+    df.loc[(df['rf_trend'] == 1) & (df['hacolt_state'] == 1), 'system_state'] = 1
+    df.loc[(df['rf_trend'] == -1) & (df['hacolt_state'] == -1), 'system_state'] = -1
+    
+    curr = df.iloc[-1]
+    prev = df.iloc[-2]
+    
+    fresh_buy  = curr['system_state'] == 1 and prev['system_state'] != 1
+    fresh_sell = curr['system_state'] == -1 and prev['system_state'] != -1
+    
+    if fresh_buy:
+        return {"Ticker": ticker, "Close": round(curr['Close'], 2), "Trend": "Bullish", "Signal": "🟢 FRESH BUY"}
+    elif fresh_sell:
+        return {"Ticker": ticker, "Close": round(curr['Close'], 2), "Trend": "Bearish", "Signal": "🔴 FRESH SELL"}
+        
+    return None
 
 def calc_hidden_swing(ticker, df, params):
     df['ema200'] = ta.ema(df['Close'], 200)
@@ -325,7 +418,6 @@ def calc_macro_box_breakout_weekly(ticker, df, params):
 def calc_weekly_trend_momentum(ticker, df, params):
     if len(df) < 50: return None
     
-    # --- CORE TREND (Lagging) ---
     df['sma40'] = ta.sma(df['Close'], 40)
     df['rsi14'] = ta.rsi(df['Close'], 14)
     
@@ -335,7 +427,6 @@ def calc_weekly_trend_momentum(ticker, df, params):
     else:
         return None
         
-    # --- LEADING INDICATORS ---
     df['cmf'] = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20)
     
     stochrsi = ta.stochrsi(df['Close'], length=14, rsi_length=14, k=3, d=3)
@@ -350,7 +441,6 @@ def calc_weekly_trend_momentum(ticker, df, params):
     curr = df.iloc[-1]
     prev = df.iloc[-2]
     
-    # --- EVALUATE CONDITIONS ---
     uptrend = curr['Close'] > curr['sma40']
     rsi_ok = curr['rsi14'] >= params.get('rsi_thresh', 40)
     adx_ok = curr['adx'] >= params.get('adx_thresh', 20)
@@ -388,19 +478,30 @@ def scan_stock(ticker, strategy_name, strategy_params):
     try:
         clean_ticker = str(ticker).strip().replace('.NS', '')
         
-        # Route interval requests based on Strategy requirements
+        tf_mapping = {
+            "4 Hours": Interval.in_4_hour,
+            "1 Day": Interval.in_daily,
+            "1 Week": Interval.in_weekly,
+            "1 Month": Interval.in_monthly
+        }
+        
+        selected_interval = Interval.in_daily 
+        if 'timeframe' in strategy_params:
+            selected_interval = tf_mapping.get(strategy_params['timeframe'], Interval.in_daily)
+            
         if strategy_name in ["Macro Darvas Box Breakout (Weekly Timeframe)", "Weekly Trend & Momentum"]:
-            df = tv.get_hist(symbol=clean_ticker, exchange='NSE', interval=Interval.in_weekly, n_bars=300)
-        else:
-            df = tv.get_hist(symbol=clean_ticker, exchange='NSE', interval=Interval.in_daily, n_bars=750)
+            selected_interval = Interval.in_weekly
+            
+        df = tv.get_hist(symbol=clean_ticker, exchange='NSE', interval=selected_interval, n_bars=400)
         
         if df is None or df.empty:
             return None 
             
         df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'volume': 'Volume', 'open': 'Open'}, inplace=True)
         
-        # Router
-        if strategy_name == "Hidden Swing Strategy":
+        if strategy_name == "HACOLT & Range Filter Screener":
+            return calc_hacolt_rf(clean_ticker, df, strategy_params)
+        elif strategy_name == "Hidden Swing Strategy":
             return calc_hidden_swing(clean_ticker, df, strategy_params)
         elif strategy_name == "Institutional EMA Pullback v3":
             return calc_inst_ema_pullback_v3(clean_ticker, df, strategy_params)
@@ -429,7 +530,6 @@ if st.button("▶️ Scan Saved Watchlist", type="primary"):
     live_table_placeholder = st.empty() 
     results = []
     
-    # Process dynamically based on user-configured rate limits
     for i in range(0, len(scan_list), batch_size):
         batch = scan_list[i:i + batch_size]
         
@@ -442,13 +542,11 @@ if st.button("▶️ Scan Saved Watchlist", type="primary"):
                     results.append(res)
                     live_table_placeholder.dataframe(pd.DataFrame(results), use_container_width=True)
         
-        # Update progress indicators
         processed_count = min(i + batch_size, len(scan_list))
         current_prog = processed_count / len(scan_list)
         progress_bar.progress(current_prog)
         status_text.text(f"Processed {processed_count}/{len(scan_list)} tickers...")
         
-        # Apply user-defined sleep delay between batches if not finished
         if processed_count < len(scan_list) and sleep_time > 0:
             time.sleep(sleep_time) 
             
