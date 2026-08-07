@@ -3,4 +3,4 @@ pandas
 pandas_ta
 requests
 beautifulsoup4
-tvDatafeed @ git+https://github.com/StreamAlpha/tvdatafeed.git
+git+https://github.com/rongardF/tvdatafeed.git#egg=tvdatafeed
