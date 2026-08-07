@@ -1,6 +1,0 @@
-streamlit
-pandas
-requests
-beautifulsoup4
-git+https://github.com/aarigs/pandas-ta.git#egg=pandas_ta
-git+https://github.com/rongardF/tvdatafeed.git#egg=tvdatafeed
