@@ -3,6 +3,15 @@ import pandas as pd
 import pandas_ta as ta
 from tvDatafeed import TvDatafeed, Interval
 import time
+import numpy as np
+
+# --- THE NUMPY 2.0 MONKEY PATCH ---
+# This bridges the gap for pandas_ta without breaking the installer
+if not hasattr(np, 'NaN'):
+    np.NaN = np.nan
+# ----------------------------------
+
+
 
 
 # =============================================================================
