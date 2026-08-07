@@ -262,4 +262,100 @@ with tab_scanner:
         nifty_daily = tv.get_hist(symbol='NIFTY', exchange='NSE', interval=Interval.in_daily, n_bars=400)
         if nifty_daily is not None:
             regime_d, emotion_d, rec_strat_d = analyze_market_regime(nifty_daily, high_window=250)
-            col1.info(f"**DAILY TIMEFRAME (Short/Mid-Term)**\n\n**Regime:** {regime_d}\n\n**Mood:** {emotion_d}\n\n**Recommended
+            col1.info(f"**DAILY TIMEFRAME (Short/Mid-Term)**\n\n**Regime:** {regime_d}\n\n**Mood:** {emotion_d}\n\n**Recommended Strategy:** {rec_strat_d}")
+        
+        nifty_weekly = tv.get_hist(symbol='NIFTY', exchange='NSE', interval=Interval.in_weekly, n_bars=200)
+        if nifty_weekly is not None:
+            regime_w, emotion_w, rec_strat_w = analyze_market_regime(nifty_weekly, high_window=52)
+            col2.warning(f"**WEEKLY TIMEFRAME (Macro/Long-Term)**\n\n**Regime:** {regime_w}\n\n**Mood:** {emotion_w}\n\n**Recommended Strategy:** {rec_strat_w}")
+            
+    st.markdown("---")
+    
+    if st.button("▶️ Run Scanner on Watchlist", type="primary"):
+        st.subheader(f"Results for: {selected_strategy}")
+        
+        results = []
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for i, ticker in enumerate(active_watchlist):
+            status_text.text(f"Scanning {ticker}... ({i+1}/{len(active_watchlist)})")
+            progress_bar.progress((i + 1) / len(active_watchlist))
+            
+            try:
+                df = tv.get_hist(symbol=ticker, exchange='NSE', interval=Interval.in_daily, n_bars=400)
+                if df is not None and not df.empty:
+                    signal_data = None
+                    
+                    if selected_strategy == "Macro Darvas Box Breakout":
+                        signal_data = calc_macro_darvas(ticker, df, params['box_len'], params['prox_pct'])
+                    elif selected_strategy == "Hidden Swing (VCP) Strategy":
+                        signal_data = calc_hidden_swing_vcp(ticker, df, params['comp_pct'], params['vcp_days'])
+                    elif selected_strategy == "Unified EMA Pullback":
+                        signal_data = calc_unified_ema_pullback(ticker, df, params['target_ema'], params['prox_pct'])
+                    elif selected_strategy == "Anchored VWAP (AVWAP)":
+                        signal_data = calc_anchored_vwap(ticker, df, params['prox_pct'])
+                    elif selected_strategy == "Relative Strength (vs NIFTY)":
+                        signal_data = calc_relative_strength(ticker, df)
+                    elif selected_strategy == "Volume Capitulation (Mean Reversion)":
+                        signal_data = calc_volume_capitulation(ticker, df, params['rsi_thresh'], params['vol_spike'])
+                    
+                    if signal_data:
+                        signal_data["Ticker"] = ticker
+                        results.append(signal_data)
+                        
+                time.sleep(delay) 
+                
+            except Exception as e:
+                pass # Fail silently on invalid tickers to keep scan moving
+                
+        status_text.text("Scan Complete!")
+        progress_bar.empty()
+        
+        if results:
+            formatted_results = [{ 'Ticker': r.pop('Ticker'), **r } for r in results]
+            results_df = pd.DataFrame(formatted_results)
+            st.dataframe(results_df, use_container_width=True)
+            st.success(f"Found {len(results)} setups matching your criteria!")
+        else:
+            st.info("No stocks matched the current strategy parameters in your watchlist.")
+
+# ----------------- PLAYBOOK TAB -----------------
+with tab_playbook:
+    st.header("📖 Trading Playbook & Market Regimes")
+    st.markdown("**Rule of Thumb:** No strategy works in every environment. Trust the sentiment analyzer on the main tab to gauge the Nifty 50 context before trading.")
+    
+    st.subheader("🧭 Market Regime Cheat Sheet")
+    regime_data = {
+        "Nifty 50 Trend": ["Making New Highs", "Slowly Grinding Up", "Sideways / Choppy", "Slowly Grinding Down", "Crashing / Panicking"],
+        "Market Emotion": ["Greed / FOMO", "Optimism", "Uncertainty", "Fear", "Extreme Panic"],
+        "Strategy to Deploy": ["Macro Darvas Breakout, Unified EMA Pullback", "Hidden Swing (VCP), Unified EMA Pullback", "Anchored VWAP, Relative Strength", "Relative Strength (Build watchlists only)", "Volume Capitulation"]
+    }
+    st.table(pd.DataFrame(regime_data))
+    
+    st.markdown("---")
+    st.subheader("📈 Strategy Breakdowns")
+    
+    with st.expander("1. Macro Darvas Box Breakout"):
+        st.write("**The Logic:** Scans for stocks near a 52-week high that are consolidating in a long-term box, supported by a macro uptrend (above the 200 SMA proxy).")
+        st.write("**Market Regime:** Strong Bull Markets.")
+        
+    with st.expander("2. Hidden Swing (VCP) Strategy"):
+        st.write("**The Logic:** Looks for Volatility Contraction Patterns (VCP)—a 7-day period where the price range compresses to less than 4%.")
+        st.write("**Market Regime:** Early Bull Markets or Post-Corrections.")
+        
+    with st.expander("3. Unified EMA Pullback"):
+        st.write("**The Logic:** Finds stocks in a verified Stage 2 Uptrend (10 > 20 > 50 > 200 EMA) pulling back to your selected moving average.")
+        st.write("**Market Regime:** Established Trending Markets.")
+        
+    with st.expander("4. Anchored VWAP (AVWAP) Support"):
+        st.write("**The Logic:** Calculates the volume-weighted average price anchored to the 52-week high.")
+        st.write("**Market Regime:** Choppy or Transitional Markets.")
+        
+    with st.expander("5. Relative Strength (vs NIFTY)"):
+        st.write("**The Logic:** Identifies stocks making new 52-week Relative Strength highs while their actual price is not at a high (silent outperformance).")
+        st.write("**Market Regime:** Bear Markets or Sideways Corrections.")
+        
+    with st.expander("6. Volume Capitulation (Mean Reversion)"):
+        st.write("**The Logic:** 'Buy the blood.' Extreme oversold RSI (< 25), trading below 20 EMA, with massive panic volume.")
+        st.write("**Market Regime:** Market Panics and Crashes.")
