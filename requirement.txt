@@ -1,0 +1,6 @@
+streamlit
+pandas
+pandas_ta
+requests
+beautifulsoup4
+tvDatafeed @ git+https://github.com/StreamAlpha/tvdatafeed.git
