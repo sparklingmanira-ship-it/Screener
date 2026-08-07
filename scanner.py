@@ -5,13 +5,19 @@ from tvDatafeed import TvDatafeed, Interval
 import time
 import numpy as np
 
-# --- THE NUMPY 2.0 MONKEY PATCH ---
-# This bridges the gap for pandas_ta without breaking the installer
+# =============================================================================
+# COMPATIBILITY PATCHES FOR PANDAS_TA
+# =============================================================================
+# 1. Fix for NumPy 2.0+
 if not hasattr(np, 'NaN'):
     np.NaN = np.nan
-# ----------------------------------
 
-
+# 2. Fix for Pandas 2.0+ (Restores the .append method for pandas_ta)
+if not hasattr(pd.Series, 'append'):
+    pd.Series.append = lambda self, other, ignore_index=False, verify_integrity=False: pd.concat([self, other], ignore_index=ignore_index, verify_integrity=verify_integrity)
+if not hasattr(pd.DataFrame, 'append'):
+    pd.DataFrame.append = lambda self, other, ignore_index=False, verify_integrity=False: pd.concat([self, other], ignore_index=ignore_index, verify_integrity=verify_integrity)
+# =============================================================================
 
 
 # =============================================================================
