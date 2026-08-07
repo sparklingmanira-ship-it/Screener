@@ -1,7 +1,6 @@
 streamlit
 pandas
 numpy<2.0.0
-requests
+pandas-ta
+tvDatafeed
 beautifulsoup4
-git+https://github.com/aarigs/pandas-ta.git#egg=pandas_ta
-git+https://github.com/rongardF/tvdatafeed.git#egg=tvdatafeed
