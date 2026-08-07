@@ -1,11 +1,15 @@
+pip install requests beautifulsoup4
+
 import streamlit as st
 import pandas_ta as ta
 import pandas as pd
 from tvDatafeed import TvDatafeed, Interval
 import concurrent.futures
 import os
-import math
 import time
+import requests
+from bs4 import BeautifulSoup
+import urllib.parse
 
 # --- INITIALIZATION ---
 @st.cache_resource
@@ -29,9 +33,10 @@ def load_watchlist():
         except Exception:
             pass
     
+    # Default watchlist 
     default_tickers = [
         "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "BHARTIARTL", "INFY", "ITC", 
-        "LT", "SBIN", "KOTAKBANK", "BAJFINANCE", "AXISBANK", "MARUTI", "SUNPHARMA"
+        "LT", "ONGC", "SBIN", "KOTAKBANK", "BAJFINANCE", "AXISBANK", "MARUTI", "SUNPHARMA"
     ]
     save_watchlist(default_tickers)
     return default_tickers
@@ -48,6 +53,7 @@ st.sidebar.header("1. Select Strategy")
 selected_strategy = st.sidebar.selectbox(
     "Which strategy do you want to run?",
     [
+        "Institutional Brokerage News Radar", # NEW INTEGRATION
         "Pro Institutional Swing Screener",
         "HACOLT & Range Filter Screener",
         "Hidden Swing Strategy", 
@@ -65,15 +71,29 @@ st.sidebar.header("2. Strategy Parameters")
 params = {}
 
 # Timeframe Selector (Applies dynamically to supported strategies)
-timeframe = st.sidebar.selectbox(
-    "Select Timeframe", 
-    ["4 Hours", "1 Day", "1 Week", "1 Month"], 
-    index=1,
-    help="Note: Darvas Box and Weekly Momentum permanently override this to 1 Week."
-)
-params['timeframe'] = timeframe
+if selected_strategy != "Institutional Brokerage News Radar":
+    timeframe = st.sidebar.selectbox(
+        "Select Timeframe", 
+        ["4 Hours", "1 Day", "1 Week", "1 Month"], 
+        index=1,
+        help="Note: Darvas Box and Weekly Momentum permanently override this to 1 Week."
+    )
+    params['timeframe'] = timeframe
 
-if selected_strategy == "Pro Institutional Swing Screener":
+if selected_strategy == "Institutional Brokerage News Radar":
+    st.sidebar.markdown("**News Scraper Parameters**")
+    params['target_brokers'] = st.sidebar.multiselect(
+        "Select Target Brokerages", 
+        ["Goldman Sachs", "Morgan Stanley", "JP Morgan", "JPMorgan", "Citi", "Macquarie", "Jefferies", "Nomura", "CLSA"],
+        default=["Goldman Sachs", "Morgan Stanley", "JP Morgan", "JPMorgan", "Citi", "Macquarie"]
+    )
+    params['req_keywords'] = st.sidebar.text_input(
+        "Required Keywords (Comma separated)", 
+        "upgrade, downgrade, target, buy, sell, overweight, neutral"
+    )
+    st.sidebar.info("This strategy connects via RSS to scan the wires for morning institutional rating calls on your watchlist.")
+
+elif selected_strategy == "Pro Institutional Swing Screener":
     st.sidebar.markdown("**Liquidity & Volume**")
     params['min_avg_vol'] = st.sidebar.number_input("Min 20-Day Avg Vol (Shares)", value=500000, step=50000)
     params['vol_surge_mult'] = st.sidebar.number_input("Volume Surge Multiplier", value=1.5, step=0.1)
@@ -166,6 +186,61 @@ sleep_time = st.sidebar.slider("Delay Between Batches (Seconds)", min_value=0.0,
 
 # --- STRATEGY LOGIC FUNCTIONS ---
 
+def calc_brokerage_news_radar(ticker, df, params):
+    """
+    NEW: Scrapes RSS Feeds for Institutional Brokerage target upgrades/downgrades
+    """
+    curr_close = df['Close'].iloc[-1] if df is not None and not df.empty else "N/A"
+    
+    brokers = params.get('target_brokers', [])
+    raw_keywords = params.get('req_keywords', "")
+    req_keywords = [k.strip().lower() for k in raw_keywords.split(",") if k.strip()]
+    
+    if not brokers:
+        return None
+        
+    # Build search query: e.g., "ONGC stock (Goldman OR Morgan Stanley OR JPMorgan)"
+    broker_str = " OR ".join([f'"{b}"' for b in brokers])
+    query = f'"{ticker}" stock ({broker_str})'
+    
+    encoded_query = urllib.parse.quote_plus(query)
+    # Using Google News RSS API for fast, structed XML responses
+    url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-IN&gl=IN&ceid=IN:en"
+    
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        res = requests.get(url, headers=headers, timeout=5)
+        soup = BeautifulSoup(res.content, 'xml')
+        items = soup.find_all('item')
+        
+        # Check the top 3 most recent articles returned
+        for item in items[:3]: 
+            title = item.title.text
+            pub_date = item.pubDate.text
+            title_lower = title.lower()
+            
+            # 1. Does the title actually contain one of our target brokers? 
+            # (Sometimes search engines return fuzzy matches, so we double verify)
+            broker_match = any(b.lower() in title_lower for b in brokers)
+            
+            # 2. Does the title contain action keywords? (upgrade, downgrade, target, etc.)
+            keyword_match = any(k in title_lower for k in req_keywords) if req_keywords else True
+            
+            if broker_match and keyword_match:
+                # Strip out excessive timezone data from RSS date format for clean display
+                clean_date = pub_date.replace(" GMT", "")
+                return {
+                    "Ticker": ticker,
+                    "LTP": round(curr_close, 2) if isinstance(curr_close, float) else curr_close,
+                    "Action Alert": title,
+                    "Published": clean_date,
+                    "Signal": "📰 BROKERAGE CALL"
+                }
+    except Exception as e:
+        pass # Silently pass on timeout to not break the multithreading loop
+        
+    return None
+
 def calc_pro_institutional_swing(ticker, df, params):
     if len(df) < 60:
         return None
@@ -173,7 +248,6 @@ def calc_pro_institutional_swing(ticker, df, params):
     curr_close = df['Close'].iloc[-1]
     curr_vol = df['Volume'].iloc[-1]
     
-    # 1. Volume & Liquidity Surges
     df['vol_sma20'] = ta.sma(df['Volume'], 20)
     avg_vol_20 = df['vol_sma20'].iloc[-1]
     
@@ -183,7 +257,6 @@ def calc_pro_institutional_swing(ticker, df, params):
     if not (liquidity_ok and vol_surge_ok):
         return None
 
-    # 2. Trend Structure & Moving Averages
     df['ema20'] = ta.ema(df['Close'], 20)
     df['ema50'] = ta.ema(df['Close'], 50)
     
@@ -202,7 +275,6 @@ def calc_pro_institutional_swing(ticker, df, params):
     if not (ema_stacked and dow_trend):
         return None
 
-    # 3. Momentum Confirmation
     df['rsi14'] = ta.rsi(df['Close'], 14)
     curr_rsi = df['rsi14'].iloc[-1]
     rsi_ok = curr_rsi >= params['min_rsi']
@@ -220,7 +292,6 @@ def calc_pro_institutional_swing(ticker, df, params):
     if not (rsi_ok and macd_ok):
         return None
 
-    # 4. Relative Strength (21-Day Rate of Change)
     df['roc21'] = ta.roc(df['Close'], 21)
     curr_roc = df['roc21'].iloc[-1]
     rs_ok = curr_roc > 0 
@@ -228,14 +299,12 @@ def calc_pro_institutional_swing(ticker, df, params):
     if not rs_ok:
         return None
 
-    # 5. Risk-to-Reward Profile & Support/Resistance
     support_level = df['Low'].tail(10).min()
     resistance_level = df['High'].tail(60).max()
     
     df['atr14'] = ta.atr(df['High'], df['Low'], df['Close'], 14)
     curr_atr = df['atr14'].iloc[-1]
     
-    # Ensure stop loss is slightly below support or ATR-based
     stop_loss = min(support_level, curr_close - (1.0 * curr_atr))
     risk = curr_close - stop_loss
     
@@ -272,7 +341,6 @@ def calc_hacolt_rf(ticker, df, params):
     rf_mult = params['rf_mult']
     hacolt_period = params['hacolt_period']
 
-    # 1. RANGE FILTER LOGIC
     df['smooth_price'] = ta.ema(df['Close'], length=5)
     df['tr'] = ta.true_range(df['High'], df['Low'], df['Close'])
     df['smooth_rng'] = ta.ema(df['tr'], length=rf_period) * rf_mult
@@ -307,7 +375,6 @@ def calc_hacolt_rf(ticker, df, params):
 
     df['rf_trend'] = rf_trend
     
-    # 2. HACOLT LOGIC 
     df['ha_close'] = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
     hacolt_ema1 = ta.ema(df['ha_close'], length=hacolt_period)
     hacolt_ema2 = ta.ema(hacolt_ema1, length=hacolt_period)
@@ -323,7 +390,6 @@ def calc_hacolt_rf(ticker, df, params):
         
     df['hacolt_state'] = df.apply(get_hacolt_state, axis=1)
     
-    # 3. COMBINED STRATEGY SCREENER ENGINE
     df['system_state'] = 0
     df.loc[(df['rf_trend'] == 1) & (df['hacolt_state'] == 1), 'system_state'] = 1
     df.loc[(df['rf_trend'] == -1) & (df['hacolt_state'] == -1), 'system_state'] = -1
@@ -607,12 +673,16 @@ def scan_stock(ticker, strategy_name, strategy_params):
             
         df = tv.get_hist(symbol=clean_ticker, exchange='NSE', interval=selected_interval, n_bars=400)
         
-        if df is None or df.empty:
+        # Override the df requirement for the News Radar so it still runs even if TV data temporarily fails
+        if (df is None or df.empty) and strategy_name != "Institutional Brokerage News Radar":
             return None 
             
-        df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'volume': 'Volume', 'open': 'Open'}, inplace=True)
+        if df is not None and not df.empty:
+            df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'volume': 'Volume', 'open': 'Open'}, inplace=True)
         
-        if strategy_name == "Pro Institutional Swing Screener":
+        if strategy_name == "Institutional Brokerage News Radar":
+            return calc_brokerage_news_radar(clean_ticker, df, strategy_params)
+        elif strategy_name == "Pro Institutional Swing Screener":
             return calc_pro_institutional_swing(clean_ticker, df, strategy_params)
         elif strategy_name == "HACOLT & Range Filter Screener":
             return calc_hacolt_rf(clean_ticker, df, strategy_params)
