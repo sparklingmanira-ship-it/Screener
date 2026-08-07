@@ -48,6 +48,7 @@ st.sidebar.header("1. Select Strategy")
 selected_strategy = st.sidebar.selectbox(
     "Which strategy do you want to run?",
     [
+        "Pro Institutional Swing Screener",
         "HACOLT & Range Filter Screener",
         "Hidden Swing Strategy", 
         "Institutional EMA Pullback v3",
@@ -72,7 +73,21 @@ timeframe = st.sidebar.selectbox(
 )
 params['timeframe'] = timeframe
 
-if selected_strategy == "HACOLT & Range Filter Screener":
+if selected_strategy == "Pro Institutional Swing Screener":
+    st.sidebar.markdown("**Liquidity & Volume**")
+    params['min_avg_vol'] = st.sidebar.number_input("Min 20-Day Avg Vol (Shares)", value=500000, step=50000)
+    params['vol_surge_mult'] = st.sidebar.number_input("Volume Surge Multiplier", value=1.5, step=0.1)
+    
+    st.sidebar.markdown("**Trend & Momentum**")
+    params['req_ema_stack'] = st.sidebar.checkbox("Require EMA Stack (Price > 20 > 50 EMA)", value=True)
+    params['req_dow_trend'] = st.sidebar.checkbox("Require Dow Theory (Higher Highs/Lows)", value=True)
+    params['min_rsi'] = st.sidebar.number_input("Min RSI (14)", value=50.0, step=1.0)
+    params['req_macd_bull'] = st.sidebar.checkbox("Require MACD > Signal", value=True)
+    
+    st.sidebar.markdown("**Risk Management**")
+    params['min_rr'] = st.sidebar.number_input("Min Reward-to-Risk Ratio", value=2.0, step=0.5)
+
+elif selected_strategy == "HACOLT & Range Filter Screener":
     params['rf_period'] = st.sidebar.number_input("Range Filter Period", value=20, step=1)
     params['rf_mult'] = st.sidebar.number_input("Range Filter Multiplier", value=3.0, step=0.1)
     params['hacolt_period'] = st.sidebar.number_input("HACOLT Smooth Period", value=55, step=1)
@@ -150,6 +165,104 @@ batch_size = st.sidebar.slider("Batch Size (Concurrent Stocks)", min_value=1, ma
 sleep_time = st.sidebar.slider("Delay Between Batches (Seconds)", min_value=0.0, max_value=5.0, value=1.0, step=0.5, help="Set to 0.0 for full speed without restrictions.")
 
 # --- STRATEGY LOGIC FUNCTIONS ---
+
+def calc_pro_institutional_swing(ticker, df, params):
+    if len(df) < 60:
+        return None
+        
+    curr_close = df['Close'].iloc[-1]
+    curr_vol = df['Volume'].iloc[-1]
+    
+    # 1. Volume & Liquidity Surges
+    df['vol_sma20'] = ta.sma(df['Volume'], 20)
+    avg_vol_20 = df['vol_sma20'].iloc[-1]
+    
+    liquidity_ok = avg_vol_20 >= params['min_avg_vol']
+    vol_surge_ok = curr_vol >= (avg_vol_20 * params['vol_surge_mult'])
+    
+    if not (liquidity_ok and vol_surge_ok):
+        return None
+
+    # 2. Trend Structure & Moving Averages
+    df['ema20'] = ta.ema(df['Close'], 20)
+    df['ema50'] = ta.ema(df['Close'], 50)
+    
+    ema_stacked = True
+    if params['req_ema_stack']:
+        ema_stacked = (curr_close > df['ema20'].iloc[-1]) and (df['ema20'].iloc[-1] > df['ema50'].iloc[-1])
+        
+    dow_trend = True
+    if params['req_dow_trend']:
+        recent_high = df['High'].tail(10).max()
+        prev_high = df['High'].iloc[-30:-10].max()
+        recent_low = df['Low'].tail(10).min()
+        prev_low = df['Low'].iloc[-30:-10].min()
+        dow_trend = (recent_high > prev_high) and (recent_low > prev_low)
+        
+    if not (ema_stacked and dow_trend):
+        return None
+
+    # 3. Momentum Confirmation
+    df['rsi14'] = ta.rsi(df['Close'], 14)
+    curr_rsi = df['rsi14'].iloc[-1]
+    rsi_ok = curr_rsi >= params['min_rsi']
+    
+    macd_ok = True
+    if params['req_macd_bull']:
+        macd_df = ta.macd(df['Close'])
+        if macd_df is not None and not macd_df.empty:
+            macd_line = macd_df.iloc[:, 0].iloc[-1]
+            macd_signal = macd_df.iloc[:, 2].iloc[-1]
+            macd_ok = macd_line > macd_signal
+        else:
+            macd_ok = False
+            
+    if not (rsi_ok and macd_ok):
+        return None
+
+    # 4. Relative Strength (21-Day Rate of Change)
+    df['roc21'] = ta.roc(df['Close'], 21)
+    curr_roc = df['roc21'].iloc[-1]
+    rs_ok = curr_roc > 0 
+    
+    if not rs_ok:
+        return None
+
+    # 5. Risk-to-Reward Profile & Support/Resistance
+    support_level = df['Low'].tail(10).min()
+    resistance_level = df['High'].tail(60).max()
+    
+    df['atr14'] = ta.atr(df['High'], df['Low'], df['Close'], 14)
+    curr_atr = df['atr14'].iloc[-1]
+    
+    # Ensure stop loss is slightly below support or ATR-based
+    stop_loss = min(support_level, curr_close - (1.0 * curr_atr))
+    risk = curr_close - stop_loss
+    
+    if risk <= 0:
+        return None
+        
+    reward = resistance_level - curr_close
+    
+    if reward <= 0:
+        return None
+        
+    rr_ratio = reward / risk
+    
+    if rr_ratio >= params['min_rr']:
+        vol_multiple = round(curr_vol / avg_vol_20, 2)
+        return {
+            "Ticker": ticker,
+            "Entry": round(curr_close, 2),
+            "Stop Loss": round(stop_loss, 2),
+            "Target Resistance": round(resistance_level, 2),
+            "R:R Ratio": f"{round(rr_ratio, 2)}:1",
+            "Vol Surge": f"{vol_multiple}x",
+            "RSI": round(curr_rsi, 1),
+            "Signal": "🟢 PRO SWING SETUP"
+        }
+
+    return None
 
 def calc_hacolt_rf(ticker, df, params):
     if len(df) < params['hacolt_period'] + 10:
@@ -499,7 +612,9 @@ def scan_stock(ticker, strategy_name, strategy_params):
             
         df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'volume': 'Volume', 'open': 'Open'}, inplace=True)
         
-        if strategy_name == "HACOLT & Range Filter Screener":
+        if strategy_name == "Pro Institutional Swing Screener":
+            return calc_pro_institutional_swing(clean_ticker, df, strategy_params)
+        elif strategy_name == "HACOLT & Range Filter Screener":
             return calc_hacolt_rf(clean_ticker, df, strategy_params)
         elif strategy_name == "Hidden Swing Strategy":
             return calc_hidden_swing(clean_ticker, df, strategy_params)
