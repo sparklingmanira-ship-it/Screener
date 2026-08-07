@@ -28,6 +28,25 @@ st.title("🚀 Professional Multi-Strategy Scanner")
 # =============================================================================
 WATCHLIST_FILE = "saved_watchlist.csv"
 
+# Canonical Company Name Mapping for Query Precision & Disambiguation
+COMPANY_NAME_MAP = {
+    "RELIANCE": "Reliance Industries",
+    "TCS": "Tata Consultancy Services",
+    "HDFCBANK": "HDFC Bank",
+    "ICICIBANK": "ICICI Bank",
+    "BHARTIARTL": "Bharti Airtel",
+    "INFY": "Infosys",
+    "ITC": "ITC",
+    "LT": "Larsen & Toubro",
+    "ONGC": "ONGC",
+    "SBIN": "State Bank of India",
+    "KOTAKBANK": "Kotak Mahindra Bank",
+    "BAJFINANCE": "Bajaj Finance",
+    "AXISBANK": "Axis Bank",
+    "MARUTI": "Maruti Suzuki",
+    "SUNPHARMA": "Sun Pharma",
+}
+
 
 @st.cache_resource
 def get_tv_connection():
@@ -54,23 +73,7 @@ def load_watchlist():
         except Exception:
             pass
 
-    default_tickers = [
-        "RELIANCE",
-        "TCS",
-        "HDFCBANK",
-        "ICICIBANK",
-        "BHARTIARTL",
-        "INFY",
-        "ITC",
-        "LT",
-        "ONGC",
-        "SBIN",
-        "KOTAKBANK",
-        "BAJFINANCE",
-        "AXISBANK",
-        "MARUTI",
-        "SUNPHARMA",
-    ]
+    default_tickers = list(COMPANY_NAME_MAP.keys())
     save_watchlist(default_tickers)
     return default_tickers
 
@@ -112,14 +115,24 @@ if selected_strategy != "Institutional Brokerage News Radar":
         "Select Timeframe",
         ["4 Hours", "1 Day", "1 Week", "1 Month"],
         index=1,
-        help=(
-            "Note: Darvas Box and Weekly Momentum permanently override this to 1 Week."
-        ),
+        help="Note: Darvas Box and Weekly Momentum permanently override this to 1 Week.",
     )
     params["timeframe"] = timeframe
 
 if selected_strategy == "Institutional Brokerage News Radar":
-    st.sidebar.markdown("**News Scraper Parameters**")
+    st.sidebar.markdown("**News Provider & Data Sources**")
+    params["news_provider"] = st.sidebar.selectbox(
+        "Select News Source",
+        [
+            "Google News RSS (Enhanced)",
+            "Yahoo Finance RSS",
+            "NSE Corporate Filings",
+            "Combined (All Sources)",
+        ],
+        index=0,
+        help="Choose between Google News, Yahoo Finance, or official NSE Exchange Disclosures.",
+    )
+
     params["target_brokers"] = st.sidebar.multiselect(
         "Select Target Brokerages",
         [
@@ -133,35 +146,30 @@ if selected_strategy == "Institutional Brokerage News Radar":
             "Nomura",
             "CLSA",
         ],
-        default=[
-            "Goldman Sachs",
-            "Morgan Stanley",
-            "Citi",
-            "Macquarie",
-        ],
+        default=["Goldman Sachs", "Morgan Stanley", "Citi", "Macquarie"],
     )
-  
+
     st.sidebar.markdown("**Authentication & Reliability**")
     params["trusted_sources"] = st.sidebar.multiselect(
-        "Permitted News Domains",
+        "Permitted News Domains (Google News)",
         [
             "moneycontrol.com",
             "economictimes.indiatimes.com",
             "cnbctv18.com",
             "livemint.com",
             "bloomberg.com",
-            "ndtvprofit.com"
+            "ndtvprofit.com",
         ],
         default=["moneycontrol.com", "economictimes.indiatimes.com", "cnbctv18.com"],
-        help="Restricts the search to highly trusted, tier-1 financial news publishers."
+        help="Restricts Google News search to tier-1 financial publishers.",
     )
-  
+
     params["req_keywords"] = st.sidebar.text_input(
         "Required Keywords (Comma separated)",
-        "upgrade, downgrade, target, buy, sell, overweight, neutral",
+        "upgrade, downgrade, target, buy, sell, overweight, neutral, analyst, investor",
     )
     st.sidebar.info(
-        "Scans Google News RSS for real-time institutional rating calls strictly from your chosen authoritative domains."
+        "Scans real-time institutional calls & NSE exchange disclosures with enhanced company mapping."
     )
 
 elif selected_strategy == "Pro Institutional Swing Screener":
@@ -180,12 +188,8 @@ elif selected_strategy == "Pro Institutional Swing Screener":
     params["req_dow_trend"] = st.sidebar.checkbox(
         "Require Dow Theory (Higher Highs/Lows)", value=True
     )
-    params["min_rsi"] = st.sidebar.number_input(
-        "Min RSI (14)", value=50.0, step=1.0
-    )
-    params["req_macd_bull"] = st.sidebar.checkbox(
-        "Require MACD > Signal", value=True
-    )
+    params["min_rsi"] = st.sidebar.number_input("Min RSI (14)", value=50.0, step=1.0)
+    params["req_macd_bull"] = st.sidebar.checkbox("Require MACD > Signal", value=True)
 
     st.sidebar.markdown("**Risk Management**")
     params["min_rr"] = st.sidebar.number_input(
@@ -193,26 +197,14 @@ elif selected_strategy == "Pro Institutional Swing Screener":
     )
 
 elif selected_strategy == "HACOLT & Range Filter Screener":
-    params["rf_period"] = st.sidebar.number_input(
-        "Range Filter Period", value=20, step=1
-    )
-    params["rf_mult"] = st.sidebar.number_input(
-        "Range Filter Multiplier", value=3.0, step=0.1
-    )
-    params["hacolt_period"] = st.sidebar.number_input(
-        "HACOLT Smooth Period", value=55, step=1
-    )
+    params["rf_period"] = st.sidebar.number_input("Range Filter Period", value=20, step=1)
+    params["rf_mult"] = st.sidebar.number_input("Range Filter Multiplier", value=3.0, step=0.1)
+    params["hacolt_period"] = st.sidebar.number_input("HACOLT Smooth Period", value=55, step=1)
 
 elif selected_strategy == "Hidden Swing Strategy":
-    params["req_trend"] = st.sidebar.checkbox(
-        "Require Stage 2 Trend (> 200 & 50 EMA)", value=True
-    )
-    params["min_strength"] = st.sidebar.number_input(
-        "Min 1-Month Return (%)", value=5.0, step=1.0
-    )
-    params["max_cons"] = st.sidebar.number_input(
-        "Max Consolidation Range (%)", value=3.0, step=0.5
-    )
+    params["req_trend"] = st.sidebar.checkbox("Require Stage 2 Trend (> 200 & 50 EMA)", value=True)
+    params["min_strength"] = st.sidebar.number_input("Min 1-Month Return (%)", value=5.0, step=1.0)
+    params["max_cons"] = st.sidebar.number_input("Max Consolidation Range (%)", value=3.0, step=0.5)
 
 elif selected_strategy == "Institutional EMA Pullback v3":
     params["atr_mult"] = st.sidebar.number_input(
@@ -223,45 +215,23 @@ elif selected_strategy == "Institutional EMA Pullback v3":
     )
 
 elif selected_strategy == "SMA 14/28 Crossover":
-    params["fast_sma"] = st.sidebar.number_input(
-        "Fast SMA Length", value=14, step=1
-    )
-    params["slow_sma"] = st.sidebar.number_input(
-        "Slow SMA Length", value=28, step=1
-    )
+    params["fast_sma"] = st.sidebar.number_input("Fast SMA Length", value=14, step=1)
+    params["slow_sma"] = st.sidebar.number_input("Slow SMA Length", value=28, step=1)
 
 elif selected_strategy == "NN50 EMA + Volume Scanner":
-    params["vol_mult"] = st.sidebar.number_input(
-        "Volume > Avg Multiplier", value=1.3, step=0.1
-    )
-    params["prox_20"] = st.sidebar.number_input(
-        "20 EMA Proximity %", value=1.5, step=0.1
-    )
-    params["prox_50"] = st.sidebar.number_input(
-        "50 EMA Proximity %", value=2.0, step=0.1
-    )
+    params["vol_mult"] = st.sidebar.number_input("Volume > Avg Multiplier", value=1.3, step=0.1)
+    params["prox_20"] = st.sidebar.number_input("20 EMA Proximity %", value=1.5, step=0.1)
+    params["prox_50"] = st.sidebar.number_input("50 EMA Proximity %", value=2.0, step=0.1)
 
 elif selected_strategy == "Macro Darvas Box Breakout (Weekly Timeframe)":
-    params["box_len"] = st.sidebar.number_input(
-        "Macro Box Length (Weeks)", value=52, step=1
-    )
-    params["max_box_height"] = (
-        st.sidebar.number_input("Max Box Height (%)", value=60.0, step=5.0) / 100
-    )
-    params["trend_sma_len"] = st.sidebar.number_input(
-        "Trend SMA Length (Weeks)", value=40, step=1
-    )
-    params["radar_pct"] = (
-        st.sidebar.number_input("Alert Proximity (%)", value=5.0, step=1.0) / 100
-    )
-    params["use_trend_filter"] = st.sidebar.checkbox(
-        "Require 40-Week SMA Uptrend?", value=True
-    )
+    params["box_len"] = st.sidebar.number_input("Macro Box Length (Weeks)", value=52, step=1)
+    params["max_box_height"] = st.sidebar.number_input("Max Box Height (%)", value=60.0, step=5.0) / 100
+    params["trend_sma_len"] = st.sidebar.number_input("Trend SMA Length (Weeks)", value=40, step=1)
+    params["radar_pct"] = st.sidebar.number_input("Alert Proximity (%)", value=5.0, step=1.0) / 100
+    params["use_trend_filter"] = st.sidebar.checkbox("Require 40-Week SMA Uptrend?", value=True)
 
     st.sidebar.markdown("**Smart Filters**")
-    params["req_vol"] = st.sidebar.checkbox(
-        "Require Volume > 10W Avg", value=True
-    )
+    params["req_vol"] = st.sidebar.checkbox("Require Volume > 10W Avg", value=True)
     params["min_close_pct"] = (
         st.sidebar.number_input(
             "Min Close Near High (%)",
@@ -274,33 +244,21 @@ elif selected_strategy == "Macro Darvas Box Breakout (Weekly Timeframe)":
 
 elif selected_strategy == "Weekly Trend & Momentum":
     st.sidebar.markdown("**Lagging Trend Filters**")
-    params["rsi_thresh"] = st.sidebar.number_input(
-        "Min RSI Level", value=40, step=1
-    )
-    params["adx_thresh"] = st.sidebar.number_input(
-        "Min ADX Level", value=20, step=1
-    )
+    params["rsi_thresh"] = st.sidebar.number_input("Min RSI Level", value=40, step=1)
+    params["adx_thresh"] = st.sidebar.number_input("Min ADX Level", value=20, step=1)
 
     st.sidebar.markdown("**Leading Smart Filters**")
     params["req_cmf"] = st.sidebar.checkbox(
-        "Require CMF > 0 (Accumulation)",
-        value=True,
-        help="Institutions are buying",
+        "Require CMF > 0 (Accumulation)", value=True, help="Institutions are buying"
     )
     params["req_stochrsi"] = st.sidebar.checkbox(
-        "Require StochRSI Bullish",
-        value=True,
-        help="Momentum velocity is shifting up",
+        "Require StochRSI Bullish", value=True, help="Momentum velocity is shifting up"
     )
     params["req_inside_bar"] = st.sidebar.checkbox(
-        "Require Inside Bar (Contraction)",
-        value=False,
-        help="Volatility has dried up",
+        "Require Inside Bar (Contraction)", value=False, help="Volatility has dried up"
     )
     params["req_hidden_div"] = st.sidebar.checkbox(
-        "Require Hidden Bull Div",
-        value=False,
-        help="Price forms higher low while RSI forms lower low",
+        "Require Hidden Bull Div", value=False, help="Price forms higher low while RSI forms lower low"
     )
 
 st.sidebar.markdown("---")
@@ -350,45 +308,183 @@ sleep_time = st.sidebar.slider(
 
 
 # =============================================================================
-# 5. STRATEGY CALCULATIONS
+# 5. ENHANCED NEWS PARSING & MULTI-SOURCE INTEGRATION (INCL. NSE FILINGS)
 # =============================================================================
-def extract_headline_details(title, brokers):
-    """
-    Parses news headlines to extract the brokerage house, call signal, and target price.
-    """
-    title_lower = title.lower()
+def extract_headline_details(text, brokers):
+    """Parses text to extract brokerage name, call action, and target price."""
+    text_lower = text.lower()
 
-    # 1. Identify Primary Brokerage
-    matched_broker = "Broker Call"
+    matched_broker = "Broker Call / Disclosure"
     for b in brokers:
-        if b.lower() in title_lower:
+        if b.lower() in text_lower:
             matched_broker = b
             break
 
-    # 2. Extract Action Call Signal
-    if any(kw in title_lower for kw in ["upgrade", "upgraded", "buy", "overweight", "outperform", "top pick", "raises target", "highest price target"]):
+    buy_kw = [
+        "upgrade", "upgraded", "buy", "overweight", "outperform",
+        "top pick", "accumulate", "raises target", "raised target"
+    ]
+    sell_kw = [
+        "downgrade", "downgraded", "sell", "underweight", "underperform",
+        "cuts target", "cut target", "reduce"
+    ]
+    hold_kw = [
+        "hold", "neutral", "equalweight", "equal-weight",
+        "maintains buy", "retains", "maintain"
+    ]
+
+    if any(kw in text_lower for kw in buy_kw):
         action_call = "🟢 BUY / UPGRADE"
-    elif any(kw in title_lower for kw in ["downgrade", "downgraded", "sell", "underweight", "underperform", "cuts target", "cut target"]):
+    elif any(kw in text_lower for kw in sell_kw):
         action_call = "🔴 SELL / DOWNGRADE"
-    elif any(kw in title_lower for kw in ["hold", "neutral", "equalweight", "equal-weight", "maintains buy", "retains"]):
+    elif any(kw in text_lower for kw in hold_kw):
         action_call = "🟡 HOLD / NEUTRAL"
     else:
-        action_call = "⚪ MIXED / REVIEW"
+        action_call = "⚪ DISCLOSURE / REVIEW"
 
-    # 3. Extract Target Price using Regex Patterns
     target_pattern = r'(?:target|tp)(?:\s+price)?(?:\s+of|\s+at|\s+to|\s+set at|\s+raised to|\s+cut to)?\s*(?:rs\.?|₹)?\s*([\d,]+(?:\.\d+)?)'
-    target_match = re.search(target_pattern, title_lower)
+    match = re.search(target_pattern, text_lower)
 
     target_price = "N/A"
-    if target_match:
-        extracted_val = target_match.group(1).replace(',', '')
-        target_price = f"₹{extracted_val}"
+    if match:
+        target_price = f"₹{match.group(1).replace(',', '')}"
     else:
-        currency_match = re.search(r'(?:rs\.?|₹)\s*([\d,]+(?:\.\d+)?)', title_lower)
-        if currency_match:
-            target_price = f"₹{currency_match.group(1).replace(',', '')}"
+        alt_match = re.search(r'(?:rs\.?|₹)\s*([\d,]+(?:\.\d+)?)', text_lower)
+        if alt_match:
+            target_price = f"₹{alt_match.group(1).replace(',', '')}"
 
     return matched_broker, action_call, target_price
+
+
+def fetch_google_news_rss(ticker, brokers, req_keywords, trusted_sources):
+    """Fetches news from Google News RSS using precise intitle query & company mapping."""
+    company_name = COMPANY_NAME_MAP.get(ticker, ticker)
+    
+    title_query = f'intitle:("{ticker}" OR "{company_name}")'
+    broker_str = "(" + " OR ".join([f'"{b}"' for b in brokers]) + ")"
+    
+    if trusted_sources:
+        site_str = "(" + " OR ".join([f"site:{site}" for site in trusted_sources]) + ")"
+        query = f'{title_query} {broker_str} {site_str}'
+    else:
+        query = f'{title_query} {broker_str}'
+
+    encoded_query = urllib.parse.quote_plus(query)
+    url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-IN&gl=IN&ceid=IN:en"
+
+    items_list = []
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    
+    try:
+        res = requests.get(url, headers=headers, timeout=6)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.content, "html.parser")
+            items = soup.find_all("item")
+            for item in items[:5]:
+                raw_title = item.title.text if item.title else ""
+                
+                if " - " in raw_title:
+                    title = raw_title.rsplit(" - ", 1)[0].strip()
+                    publisher = raw_title.rsplit(" - ", 1)[-1].strip()
+                else:
+                    title = raw_title
+                    source_tag = item.find("source")
+                    publisher = source_tag.text if (source_tag and source_tag.text) else "Google News"
+
+                pub_date_tag = item.find("pubDate") or item.find("pubdate")
+                pub_date_raw = pub_date_tag.text if pub_date_tag else "N/A"
+
+                items_list.append({
+                    "title": title,
+                    "description": "",
+                    "full_text": title,
+                    "publisher": publisher,
+                    "pub_date_raw": pub_date_raw,
+                    "source": "Google News"
+                })
+    except Exception:
+        pass
+
+    return items_list
+
+
+def fetch_yahoo_finance_rss(ticker, brokers):
+    """Fetches news directly from Yahoo Finance ticker-bound RSS feed."""
+    yahoo_symbol = f"{ticker}.NS"
+    url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={yahoo_symbol}&region=IN&lang=en-IN"
+    
+    items_list = []
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    
+    try:
+        res = requests.get(url, headers=headers, timeout=6)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.content, "html.parser")
+            items = soup.find_all("item")
+            for item in items[:5]:
+                title = item.title.text if item.title else ""
+                description = item.description.text if item.description else ""
+                full_text = f"{title} {description}"
+                
+                pub_date_tag = item.find("pubDate") or item.find("pubdate")
+                pub_date_raw = pub_date_tag.text if pub_date_tag else "N/A"
+
+                items_list.append({
+                    "title": title,
+                    "description": description,
+                    "full_text": full_text,
+                    "publisher": "Yahoo Finance",
+                    "pub_date_raw": pub_date_raw,
+                    "source": "Yahoo Finance"
+                })
+    except Exception:
+        pass
+
+    return items_list
+
+
+def fetch_nse_corporate_announcements(ticker):
+    """Fetches official corporate disclosures & filings from the NSE India API."""
+    clean_symbol = ticker.strip().upper()
+    url = f"https://www.nseindia.com/api/corporate-announcements?index=equities&symbol={clean_symbol}"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": f"https://www.nseindia.com/get-quotes/equity?symbol={clean_symbol}",
+    }
+    
+    session = requests.Session()
+    session.headers.update(headers)
+    
+    items_list = []
+    try:
+        # Establish session cookies
+        session.get("https://www.nseindia.com", timeout=5)
+        res = session.get(url, timeout=5)
+        
+        if res.status_code == 200:
+            data = res.json()
+            if isinstance(data, list):
+                for item in data[:5]:
+                    subject = item.get("desc", "") or item.get("attchmntText", "") or item.get("sm_subject", "")
+                    details = item.get("attchmntText", "") or item.get("an_dt", "")
+                    broadcast_dt = item.get("an_dt", "N/A")
+                    
+                    full_text = f"{subject} {details}"
+                    items_list.append({
+                        "title": subject,
+                        "description": details,
+                        "full_text": full_text,
+                        "publisher": "NSE India Exchange",
+                        "pub_date_raw": broadcast_dt,
+                        "source": "NSE Filings"
+                    })
+    except Exception:
+        pass
+    
+    return items_list
 
 
 def calc_brokerage_news_radar(ticker, df, params):
@@ -399,109 +495,77 @@ def calc_brokerage_news_radar(ticker, df, params):
     brokers = params.get("target_brokers", [])
     raw_keywords = params.get("req_keywords", "")
     trusted_sources = params.get("trusted_sources", [])
+    provider = params.get("news_provider", "Google News RSS (Enhanced)")
+
+    req_keywords = [k.strip().lower() for k in raw_keywords.split(",") if k.strip()]
+
+    raw_items = []
+    if provider in ["Google News RSS (Enhanced)", "Combined (All Sources)"]:
+        raw_items.extend(fetch_google_news_rss(ticker, brokers, req_keywords, trusted_sources))
     
-    req_keywords = [
-        k.strip().lower() for k in raw_keywords.split(",") if k.strip()
-    ]
+    if provider in ["Yahoo Finance RSS", "Combined (All Sources)"]:
+        raw_items.extend(fetch_yahoo_finance_rss(ticker, brokers))
 
-    if not brokers:
-        return None
+    if provider in ["NSE Corporate Filings", "Combined (All Sources)"]:
+        raw_items.extend(fetch_nse_corporate_announcements(ticker))
 
-    # 1. Build the Broker Query
-    broker_str = " OR ".join([f'"{b}"' for b in brokers])
-    
-    # 2. Build the Trusted Domain Query
-    if trusted_sources:
-        site_str = " OR ".join([f"site:{site}" for site in trusted_sources])
-        query = f'"{ticker}" ({broker_str}) ({site_str})'
-    else:
-        query = f'"{ticker}" stock ({broker_str})'
+    company_name = COMPANY_NAME_MAP.get(ticker, ticker).lower()
+    ticker_base = ticker.lower().split('-')[0]
 
-    encoded_query = urllib.parse.quote_plus(query)
-    url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-IN&gl=IN&ceid=IN:en"
+    for item in raw_items:
+        title = item.get("title", "")
+        full_text = item.get("full_text", title)
+        publisher = item.get("publisher", "News Source")
+        pub_date_raw = item.get("pub_date_raw", "N/A")
+        source = item.get("source", "RSS")
 
-    try:
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            )
+        text_to_check = full_text.lower()
+
+        # Disambiguation Check
+        ticker_match = (ticker_base in text_to_check) or (company_name in text_to_check) or (source == "NSE Filings")
+        if not ticker_match:
+            continue
+
+        broker_match = any(b.lower() in text_to_check for b in brokers) if (brokers and source != "NSE Filings") else True
+        if not broker_match:
+            continue
+
+        keyword_match = (
+            any(k in text_to_check for k in req_keywords)
+            if req_keywords
+            else True
+        )
+        if not keyword_match:
+            continue
+
+        clean_date = "N/A"
+        if pub_date_raw != "N/A":
+            try:
+                dt = parsedate_to_datetime(pub_date_raw)
+                clean_date = dt.strftime("%d/%b/%y")
+            except Exception:
+                clean_date = str(pub_date_raw).replace(" GMT", "")
+
+        matched_broker, action_call, target_price = extract_headline_details(full_text, brokers)
+
+        return {
+            "Ticker": ticker,
+            "LTP": round(curr_close, 2) if isinstance(curr_close, float) else curr_close,
+            "Brokerage": matched_broker if source != "NSE Filings" else "NSE Filing",
+            "Call Signal": action_call,
+            "Target Price": target_price,
+            "Publisher": publisher,
+            "Source": source,
+            "Action Alert": title,
+            "Published": clean_date,
         }
-        res = requests.get(url, headers=headers, timeout=5)
-
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.content, "html.parser") 
-            items = soup.find_all("item")
-
-            for item in items[:3]:
-                raw_title = item.title.text if item.title else ""
-                
-                # --- PUBLISHER EXTRACTION & HEADLINE CLEANUP ---
-                if " - " in raw_title:
-                    title = raw_title.rsplit(" - ", 1)[0].strip() 
-                    publisher = raw_title.rsplit(" - ", 1)[-1].strip()
-                else:
-                    title = raw_title
-                    source_tag = item.find("source")
-                    publisher = source_tag.text if (source_tag and source_tag.text) else "Unknown"
-                # ----------------------------------------------------
-                
-                pub_date_tag = item.find("pubDate") or item.find("pubdate")
-                pub_date_raw = pub_date_tag.text if pub_date_tag else "N/A"
-                
-                title_lower = title.lower()
-
-                # --- STRICT HEADLINE VALIDATION ---
-                ticker_base = ticker.lower().split('-')[0] 
-                
-                if len(ticker_base) <= 3:
-                    pattern = rf'\b{re.escape(ticker_base)}\b'
-                    ticker_in_title = bool(re.search(pattern, title_lower))
-                else:
-                    ticker_in_title = ticker_base in title_lower
-
-                if not ticker_in_title:
-                    continue 
-                # ----------------------------------
-
-                broker_match = any(b.lower() in title_lower for b in brokers)
-                keyword_match = (
-                    any(k in title_lower for k in req_keywords)
-                    if req_keywords
-                    else True
-                )
-
-                if broker_match and keyword_match:
-                    
-                    clean_date = "N/A"
-                    if pub_date_raw != "N/A":
-                        try:
-                            dt = parsedate_to_datetime(pub_date_raw)
-                            clean_date = dt.strftime("%d/%b/%y")
-                        except Exception:
-                            clean_date = pub_date_raw.replace(" GMT", "")
-                    
-                    matched_broker, action_call, target_price = extract_headline_details(title, brokers)
-
-                    return {
-                        "Ticker": ticker,
-                        "LTP": (
-                            round(curr_close, 2)
-                            if isinstance(curr_close, float)
-                            else curr_close
-                        ),
-                        "Brokerage": matched_broker,
-                        "Call Signal": action_call,
-                        "Target Price": target_price,
-                        "Publisher": publisher,  
-                        "Action Alert": title,
-                        "Published": clean_date,
-                    }
-    except Exception:
-        pass
 
     return None
 
 
+# =============================================================================
+# 6. TECHNICAL STRATEGY CALCULATIONS
+# =============================================================================
 def calc_pro_institutional_swing(ticker, df, params):
     if len(df) < 60:
         return None
@@ -547,7 +611,7 @@ def calc_pro_institutional_swing(ticker, df, params):
         macd_df = ta.macd(df["Close"])
         if macd_df is not None and not macd_df.empty:
             macd_line = macd_df.iloc[:, 0].iloc[-1]
-            macd_signal = macd_df.iloc[:, 2].iloc[-1]
+            macd_signal = macd_df.iloc.iloc[-1]
             macd_ok = macd_line > macd_signal
         else:
             macd_ok = False
@@ -657,12 +721,8 @@ def calc_hacolt_rf(ticker, df, params):
     df["hacolt_state"] = df.apply(get_hacolt_state, axis=1)
 
     df["system_state"] = 0
-    df.loc[
-        (df["rf_trend"] == 1) & (df["hacolt_state"] == 1), "system_state"
-    ] = 1
-    df.loc[
-        (df["rf_trend"] == -1) & (df["hacolt_state"] == -1), "system_state"
-    ] = -1
+    df.loc[(df["rf_trend"] == 1) & (df["hacolt_state"] == 1), "system_state"] = 1
+    df.loc[(df["rf_trend"] == -1) & (df["hacolt_state"] == -1), "system_state"] = -1
 
     curr = df.iloc[-1]
     prev = df.iloc[-2]
@@ -735,8 +795,8 @@ def calc_inst_ema_pullback_v3(ticker, df, params):
     adx_df = ta.adx(df["High"], df["Low"], df["Close"], 14)
     if adx_df is not None and not adx_df.empty:
         df["adx"] = adx_df.iloc[:, 0]
-        df["di_plus"] = adx_df.iloc[:, 1]
-        df["di_minus"] = adx_df.iloc[:, 2]
+        df["di_plus"] = adx_df.iloc
+        df["di_minus"] = adx_df.iloc
     else:
         return None
 
@@ -797,7 +857,6 @@ def calc_inst_ema_pullback_v3(ticker, df, params):
         and not_consolidating
         and acceptable_risk
     ):
-
         return {
             "Ticker": ticker,
             "Entry": round(entry_price, 2),
@@ -962,7 +1021,7 @@ def calc_weekly_trend_momentum(ticker, df, params):
     stochrsi = ta.stochrsi(df["Close"], length=14, rsi_length=14, k=3, d=3)
     if stochrsi is not None and not stochrsi.empty:
         df["stoch_k"] = stochrsi.iloc[:, 0]
-        df["stoch_d"] = stochrsi.iloc[:, 1]
+        df["stoch_d"] = stochrsi.iloc
     else:
         return None
 
@@ -1007,7 +1066,7 @@ def calc_weekly_trend_momentum(ticker, df, params):
 
 
 # =============================================================================
-# 6. CORE SCANNING ENGINE
+# 7. CORE SCANNING ENGINE
 # =============================================================================
 def scan_stock(ticker, strategy_name, strategy_params):
     try:
@@ -1086,7 +1145,7 @@ def scan_stock(ticker, strategy_name, strategy_params):
 
 
 # =============================================================================
-# 7. UI SCAN EXECUTION
+# 8. UI SCAN EXECUTION
 # =============================================================================
 st.markdown(f"### Running: {selected_strategy}")
 
