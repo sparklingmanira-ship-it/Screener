@@ -4,6 +4,9 @@ import pandas_ta as ta
 from tvDatafeed import TvDatafeed, Interval
 import time
 
+if not hasattr(np, 'NaN'):
+    np.NaN = np.nan
+
 # =============================================================================
 # 1. PAGE CONFIGURATION & CACHING
 # =============================================================================
