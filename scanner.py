@@ -1,5 +1,3 @@
-pip install requests beautifulsoup4
-
 import streamlit as st
 import pandas_ta as ta
 import pandas as pd
