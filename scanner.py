@@ -429,18 +429,39 @@ def calc_brokerage_news_radar(ticker, df, params):
         res = requests.get(url, headers=headers, timeout=5)
 
         if res.status_code == 200:
-            # html.parser is used for broader compatibility if lxml/xml parser is missing
             soup = BeautifulSoup(res.content, "html.parser") 
             items = soup.find_all("item")
 
             for item in items[:3]:
-                title = item.title.text if item.title else ""
+                raw_title = item.title.text if item.title else ""
+                
+                # --- PUBLISHER EXTRACTION & HEADLINE CLEANUP ---
+                if " - " in raw_title:
+                    title = raw_title.rsplit(" - ", 1)[0].strip() 
+                    publisher = raw_title.rsplit(" - ", 1)[-1].strip()
+                else:
+                    title = raw_title
+                    source_tag = item.find("source")
+                    publisher = source_tag.text if (source_tag and source_tag.text) else "Unknown"
+                # ----------------------------------------------------
+                
                 pub_date_tag = item.find("pubDate") or item.find("pubdate")
                 pub_date_raw = pub_date_tag.text if pub_date_tag else "N/A"
-                source_tag = item.find("source")
-                publisher = source_tag.text if source_tag else "Unknown"
                 
                 title_lower = title.lower()
+
+                # --- STRICT HEADLINE VALIDATION ---
+                ticker_base = ticker.lower().split('-')[0] 
+                
+                if len(ticker_base) <= 3:
+                    pattern = rf'\b{re.escape(ticker_base)}\b'
+                    ticker_in_title = bool(re.search(pattern, title_lower))
+                else:
+                    ticker_in_title = ticker_base in title_lower
+
+                if not ticker_in_title:
+                    continue 
+                # ----------------------------------
 
                 broker_match = any(b.lower() in title_lower for b in brokers)
                 keyword_match = (
@@ -451,18 +472,13 @@ def calc_brokerage_news_radar(ticker, df, params):
 
                 if broker_match and keyword_match:
                     
-                    # --- NEW DATE PARSING LOGIC ---
                     clean_date = "N/A"
                     if pub_date_raw != "N/A":
                         try:
-                            # Convert RSS standard RFC 2822 date string into a datetime object
                             dt = parsedate_to_datetime(pub_date_raw)
-                            # Format as DD/MMM/YY
                             clean_date = dt.strftime("%d/%b/%y")
                         except Exception:
-                            # Fallback if parsing fails for any reason
                             clean_date = pub_date_raw.replace(" GMT", "")
-                    # ------------------------------
                     
                     matched_broker, action_call, target_price = extract_headline_details(title, brokers)
 
